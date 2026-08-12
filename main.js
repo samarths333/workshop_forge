@@ -91,6 +91,35 @@ ipcMain.handle('skills:import', async () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* the object itself, off the pedestal and onto disk                   */
+/* ------------------------------------------------------------------ */
+/* The renderer tessellates and writes the bytes — it is the only side that
+   has the meshes — and hands them over as a plain Uint8Array or a string.
+   Main owns the dialog and the write, for the same reason it owns every
+   other path in this app: the renderer never learns where anything lives. */
+const EXT_LABEL = { stl: 'STL (for a slicer)', obj: 'OBJ (for a modeller)', json: 'JSON' };
+
+ipcMain.handle('model:save', async (_e, { name, ext, data }) => {
+  const safeExt = /^[a-z0-9]{2,4}$/.test(String(ext)) ? String(ext) : 'stl';
+  const stem = String(name || 'build').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'build';
+
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Save the build',
+    defaultPath: `${stem}.${safeExt}`,
+    filters: [{ name: EXT_LABEL[safeExt] || safeExt.toUpperCase(), extensions: [safeExt] }]
+  });
+  if (canceled || !filePath) return { ok: false, cancelled: true };
+
+  try {
+    const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(new Uint8Array(data));
+    fs.writeFileSync(filePath, buf);
+    return { ok: true, path: filePath, bytes: buf.length };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+/* ------------------------------------------------------------------ */
 /* llm transport                                                       */
 /* ------------------------------------------------------------------ */
 async function withTimeout(promise, ms, label) {

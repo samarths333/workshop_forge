@@ -95,6 +95,10 @@
         <div class="cadHead"><h3>Part</h3></div>
         <div class="cadPropsBody"></div>
         <div class="cadActions">
+          <button id="btnUndo" data-cmd="undo" disabled title="⌘Z">Undo</button>
+          <button id="btnRedo" data-cmd="redo" disabled title="⇧⌘Z">Redo</button>
+        </div>
+        <div class="cadActions">
           <button data-cmd="add">Add part</button>
           <button data-cmd="teach" class="primary">Teach Rivet this</button>
         </div>
@@ -114,7 +118,12 @@
       </div>
       <ol id="steps"></ol>
       <div class="tfoot"><span id="jobCount">0 / 0 operations</span><span id="jobParts">0 parts</span></div>
-      <button id="btnExport" class="ghost" disabled>Export plan (JSON)</button>
+      <div class="row erow">
+        <button id="btnExport" class="ghost" disabled>Plan</button>
+        <button id="btnStl" class="ghost" disabled title="binary STL, millimetres, Z up — drop it straight into a slicer">STL</button>
+        <button id="btnObj" class="ghost" disabled title="OBJ, millimetres, Y up, one object per part">OBJ</button>
+      </div>
+      <p class="fine erowNote">Take it off the pedestal: the plan as JSON, or the solid itself.</p>
     </div>
 
     <section class="learned">

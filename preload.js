@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('forge', {
   setCfg:  (c)                => ipcRenderer.invoke('cfg:set', c),
   openUrl: (u)                => ipcRenderer.invoke('shell:open', u),
   refs:    (term)             => ipcRenderer.invoke('refs:search', term),
+  saveModel: (payload)        => ipcRenderer.invoke('model:save', payload),
 
   skills: {
     load:   ()     => ipcRenderer.invoke('skills:load'),

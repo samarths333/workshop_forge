@@ -9,8 +9,10 @@ import {
   planParts, editPart, addPart, removePart
 } from './agent.js';
 import { inspectPlan, describeSolved } from './critic.js';
-import { recall, learn, sanitize, deterministicReflection, repeatedFault, describeEdits } from './skills.js';
+import { recall, learn, sanitize, mergeLibraries, deterministicReflection, repeatedFault, describeEdits } from './skills.js';
 import { CadView } from './cad.js';
+import { History } from './history.js';
+import { trianglesFrom, toSTL, toOBJ, summarise } from './export3d.js';
 
 const $ = s => document.querySelector(s);
 const stage = $('#stage');
@@ -79,9 +81,14 @@ function startJob(plan, solved) {
   renderTraveler();
   pushToCad();
   if (cad.active) cad.frameAll();
+  // a new job is the floor of the undo stack — you cannot step back out of
+  // this build and into the last one
+  history.reset({ steps: plan.steps }, 'as planned');
+  syncUndo();
   $('#btnStop').disabled = false;
   $('#btnBuild').disabled = true;
   $('#btnExport').disabled = false;
+  setModelExport(false);
   log(`job on the floor: <b>${esc(plan.title)}</b> — ${plan.steps.length} operations, ${solved.instances.length} components`, 'hi');
 }
 
@@ -125,6 +132,7 @@ function finishJob() {
   job.running = false;
   $('#btnStop').disabled = true;
   $('#btnBuild').disabled = false;
+  setModelExport(true);
   renderTraveler();
   pushToCad();
   reflectAndLearn();
@@ -391,11 +399,22 @@ function renderSkills() {
          <span class="sk-name">${esc(s.name)}</span>
          ${s.stats.taught ? '<span class="sk-taught" title="corrected by hand on the bench">✋</span>' : ''}
          <span class="sk-class">${esc(s.class)}</span>
+         <button class="sk-again" title="build this again">↻</button>
          <button class="sk-forget" title="forget this">✕</button>
        </div>
        <div class="sk-bar"><span style="width:${pct}%"></span></div>
        <div class="sk-meta">${s.stats.uses} build${s.stats.uses === 1 ? '' : 's'} · ${s.stats.cleanFirstPass} clean${s.stats.taught ? ` · ${s.stats.taught} taught` : ''} · ${(s.recipe.parts || []).length} parts · ${pct}% sure</div>
        ${(s.lessons || []).length ? `<ul class="sk-lessons">${s.lessons.slice(0, 3).map(l => `<li>${esc(l)}</li>`).join('')}</ul>` : ''}`;
+    /* Build it again. The request that produced it goes back in the box —
+       which is what makes the recall fire, so this is a real rebuild off
+       the stored recipe rather than a replay of a recording. */
+    el.querySelector('.sk-again').onclick = () => {
+      if (job.running) { log('he is already on a job', 'err'); return; }
+      const req = (s.sourceRequests || [])[0] || s.name;
+      $('#req').value = req;
+      log(`building <b>${esc(s.name)}</b> again — "${esc(req)}"`, 'hi');
+      requestBuild();
+    };
     el.querySelector('.sk-forget').onclick = async () => {
       skills = skills.filter(x => x !== s);
       await persistSkills();
@@ -644,22 +663,64 @@ function pushToCad() {
   cad.setModel(job.plan, planParts(job.plan), job.solved);
 }
 
-/* One field changed in the properties panel: mutate the spec, re-solve,
-   and put the result on the bench — and on the pedestal too if the build
-   has already finished, so the two views never disagree. */
+/* ---- undo ---- */
+/* Whole plans, not diffs. A plan is a few kilobytes of JSON and a re-solve
+   costs more than a clone, so there is nothing to be gained by being clever
+   here — and an inverse operation that applies backwards slightly wrong is
+   a much worse bug than a stack that is a little fat. */
+const history = new History();
+
+function snapshot(label, key) {
+  if (!job.plan) return;
+  history.push({ steps: job.plan.steps }, { label, key });
+  syncUndo();
+}
+
+function syncUndo() {
+  const u = $('#btnUndo'), r = $('#btnRedo');
+  if (!u || !r) return;
+  u.disabled = !history.canUndo;
+  r.disabled = !history.canRedo;
+  u.title = history.canUndo ? `⌘Z — undo ${history.undoLabel}` : '⌘Z';
+  r.title = history.canRedo ? `⇧⌘Z — redo ${history.redoLabel}` : '⇧⌘Z';
+}
+
+function applyHistory(state, verb) {
+  if (!state || !job.plan) return;
+  job.plan.steps = structuredClone(state.steps);
+  // the selection can easily point past the end of a shorter plan
+  const n = planParts(job.plan).length;
+  if (cad.selected != null && cad.selected >= n) cad.selected = n ? n - 1 : null;
+  reSolve();
+  syncUndo();
+  log(`${verb} on the bench`, 'hi');
+}
+
+const undoEdit = () => history.canUndo && applyHistory(history.undo(), 'stepped back');
+const redoEdit = () => history.canRedo && applyHistory(history.redo(), 'stepped forward');
+
+/* One field changed in the properties panel: mutate the spec, record it,
+   re-solve, and put the result on the bench — and on the pedestal too if
+   the build has already finished, so the two views never disagree. */
 cad.onEdit = (index, patch) => {
   if (!job.plan) return;
   if (!job.asPlanned) job.asPlanned = structuredClone(planParts(job.plan));
+  const field = Object.keys(patch)[0] || 'field';
   editPart(job.plan, index, patch);
+  // keystrokes in one field are one edit, not four
+  snapshot(`${field} on ${planParts(job.plan)[index]?.name || 'a part'}`, `edit:${index}:${field}`);
   reSolve();
 };
 
 cad.onCommand = (cmd) => {
+  if (cmd === 'undo') return undoEdit();
+  if (cmd === 'redo') return redoEdit();
   if (!job.plan) return;
   if (!job.asPlanned) job.asPlanned = structuredClone(planParts(job.plan));
 
   if (cmd === 'add') {
     const { index } = addPart(job.plan, { name: 'new part', shape: 'box', material: 'metal' });
+    snapshot('an added part');
     reSolve();
     cad.select(index);
     log('added a part on the bench', 'hi');
@@ -668,6 +729,7 @@ cad.onCommand = (cmd) => {
     const gone = planParts(job.plan)[cad.selected];
     removePart(job.plan, cad.selected);
     cad.selected = null;
+    snapshot(`scrapping the ${gone?.name || 'part'}`);
     reSolve();
     log(`scrapped <b>${esc(gone?.name || 'a part')}</b> on the bench`, 'err');
   } else if (cmd === 'teach') {
@@ -688,6 +750,7 @@ function reSolve() {
   if (buildSettled()) {
     job.placed = world.rebuildAssembly(job.solved);
   }
+  setModelExport(buildSettled());
   pushToCad();
   renderTraveler();
 }
@@ -859,6 +922,14 @@ function focusRoom(k) {
 }
 const CAD_KEY_VIEWS = ['front', 'top', 'right', 'iso'];
 addEventListener('keydown', e => {
+  /* Undo is checked before the field guard on purpose: the edit it steps
+     back is one made by typing in those very fields, so it has to work
+     while the caret is still sitting in one. */
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && cad.active) {
+    e.preventDefault();
+    e.shiftKey ? redoEdit() : undoEdit();
+    return;
+  }
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
   const k = e.key.toLowerCase();
   if (k === 'b') { toggleCad(); return; }
@@ -937,17 +1008,12 @@ $('#btnSkillExport').onclick = async () => {
 $('#btnSkillImport').onclick = async () => {
   const r = await window.forge.skills.import();
   if (!r.ok) { if (r.error) log('import failed: ' + esc(r.error), 'err'); return; }
-  const incoming = sanitize(r.skills);
-  const byClass = new Map(skills.map(s => [s.class, s]));
-  let added = 0, merged = 0;
-  for (const s of incoming) {
-    const have = byClass.get(s.class);
-    if (!have) { skills.unshift(s); byClass.set(s.class, s); added++; }
-    else if ((s.confidence || 0) > (have.confidence || 0)) { skills[skills.indexOf(have)] = s; merged++; }
-  }
+  const { skills: next, added, replaced, kept } = mergeLibraries(skills, r.skills);
+  skills = next;
   await persistSkills();
   renderSkills();
-  log(`imported — ${added} new, ${merged} replaced with a more confident version`, 'ok');
+  log(`imported — ${added} new, ${replaced} replaced with a more confident version` +
+      (kept ? `, ${kept} left alone because what he already knows is better` : ''), 'ok');
 };
 
 /* ------------------------------------------------------------------ */
@@ -991,6 +1057,68 @@ $('#btnExport').onclick = () => {
 $('#req').addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) requestBuild();
 });
+
+/* ------------------------------------------------------------------ */
+/* the object itself, off the pedestal                                 */
+/* ------------------------------------------------------------------ */
+/* Everything up to here has been about making the thing exist on screen.
+   This is the part that makes it exist anywhere else. */
+function setModelExport(on) {
+  const ready = !!(on && job.solved && job.placed > 0);
+  $('#btnStl').disabled = !ready;
+  $('#btnObj').disabled = !ready;
+}
+
+const slug = () => (job.plan?.title || 'build').trim().toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'build';
+
+/* One group per part so the assembly opens as an assembly, with all the
+   weld beads and bolts collapsed into a single "seams" object — otherwise
+   a welded joint alone is twenty objects called bead_1..bead_20. */
+function exportGroups() {
+  const meshes = world.assemblyMeshes();
+  const groups = [];
+  const seams = [];
+  const seen = new Map();
+
+  for (const m of meshes) {
+    const tris = trianglesFrom(m);
+    if (!tris.length) continue;
+    if (m.seam) { seams.push(tris); continue; }
+    // two parts called "leg" must not become one object called "leg"
+    const n = (seen.get(m.name) || 0) + 1;
+    seen.set(m.name, n);
+    groups.push({ name: n > 1 ? `${m.name}_${n}` : m.name, tris });
+  }
+
+  if (seams.length) {
+    const total = seams.reduce((n, t) => n + t.length, 0);
+    const all = new Float32Array(total);
+    let o = 0;
+    for (const t of seams) { all.set(t, o); o += t.length; }
+    groups.push({ name: 'seams', tris: all });
+  }
+  return groups;
+}
+
+async function exportModel(kind) {
+  if (!job.solved || !job.placed) return;
+  const groups = exportGroups();
+  if (!groups.length) { log('nothing on the pedestal to export', 'err'); return; }
+
+  const info = summarise(groups);
+  const data = kind === 'stl' ? toSTL(groups) : toOBJ(groups);
+  const res = await window.forge.saveModel({ name: slug(), ext: kind, data });
+
+  if (res?.cancelled) return;
+  if (!res?.ok) { log(`could not write the ${kind.toUpperCase()}: ${esc(res?.error || 'unknown error')}`, 'err'); return; }
+  log(`wrote <b>${esc(res.path.split('/').pop())}</b> — ${info.parts} object${info.parts === 1 ? '' : 's'}, ` +
+      `${info.triangles.toLocaleString()} triangles, ${(res.bytes / 1024).toFixed(0)} kB` +
+      (kind === 'stl' ? ' · millimetres, Z up' : ' · millimetres, Y up'), 'ok');
+}
+
+$('#btnStl').onclick = () => exportModel('stl');
+$('#btnObj').onclick = () => exportModel('obj');
 
 /* ------------------------------------------------------------------ */
 /* loop                                                                */

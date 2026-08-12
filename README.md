@@ -99,6 +99,12 @@ has already finished, the pedestal in the shop updates with it. **Add part** and
 work too; attachments are renumbered underneath so nothing is left pointing at a part that no longer
 exists.
 
+**Undo** (⌘Z, ⇧⌘Z to redo) covers all of it, including a scrapped part. Because the panel fires on
+every keystroke, typing `0.42` into a size field is one undo, not four — edits to the same field in
+quick succession fold together, so stepping back undoes the thing you did rather than the events the
+browser happened to emit. The stack starts fresh with each new job: you cannot undo your way out of
+this build and into the last one.
+
 Then press **Teach Rivet this**. Your corrected geometry becomes the stored recipe for that class,
 and the *diff* becomes the lessons:
 
@@ -226,17 +232,21 @@ renderer/
   textures.js            procedural canvas textures — no external assets, works offline
   agent.js               prompts, JSON schemas, validator, plan editing, offline planner
   cad.js                 the bench — CAD viewport, attach tree, editable properties
-  skills.js              distil / score / recall / reinforce a learned build
+  skills.js              distil / score / recall / reinforce / merge a learned build
+  history.js             undo on the bench — whole plans, coalesced by field
+  export3d.js            triangles → binary STL and OBJ
   critic.js              solve the plan and audit what comes out
   app.js                 executor state machine + UI
 test/
   solver.test.mjs        the solver and the skill library, plus the whole offline pipeline
   geometry.test.mjs      real three.js meshes measured against what the solver assumed
+  learning.test.mjs      offline build → skill → recall → reinforce, undo, and the exporters
   wiring.test.mjs        imports, DOM ids, IPC bridge, CSP hash, clip coverage
 ```
 
-`assembly.js` and `skills.js` import nothing — no three.js, no DOM — which is why the whole
-planning and layout path can be tested in node with `npm test` and no window on screen.
+`assembly.js`, `skills.js`, `history.js` and `export3d.js` import nothing — no three.js, no DOM —
+which is why the whole planning, layout, memory and export path can be tested in node with
+`npm test` and no window on screen. 103 checks, about a second.
 
 Zero downloaded assets. Every texture — the corrugation, the flute edges, the marker-drawn hanging
 signs, Rivet's face — is drawn into a `<canvas>` at startup.
@@ -279,6 +289,30 @@ bolts. Nothing floats regardless of what the model claimed, and models claim a l
 
 The arrays are the part that matters most in practice. Models reliably forget the second, third and
 fourth leg, but they never forget to *say* "four legs" if there is somewhere to say it.
+
+## Taking it out of the shop
+
+Under the job traveler: **Plan**, **STL**, **OBJ**. The first is the plan and the solved layout as
+JSON. The other two are the object itself, straight off the pedestal — every part, plus the weld
+beads and bolts collapsed into one `seams` object, with each part kept as its own solid so the
+assembly opens as an assembly.
+
+Two conventions, because getting either wrong gives you a file that opens fine and is useless:
+
+- **Millimetres.** The shop thinks in metres and STL carries no units at all, so a slicer assuming
+  millimetres would import a 0.4m part as a speck. Everything is scaled ×1000 on the way out.
+- **STL is Z-up, OBJ is Y-up.** three.js is Y-up and printers are Z-up, so the STL is swung round
+  and lands flat in a slicer instead of on its side. OBJ is read by modellers that are mostly Y-up,
+  so it is left alone.
+
+Degenerate facets — tessellating a cone tip reliably makes a few — are dropped before writing, and
+`learning.test.mjs` checks the byte layout, the facet count, the units, the rotation and the vertex
+sharing rather than trusting that a file which opens is a file that is right.
+
+The ↻ on any card in **What Rivet has learned** builds that thing again: the request goes back in
+the box, which is what makes the recall fire, so it is a real rebuild from the stored recipe rather
+than a replay of a recording. With no engine reachable it still works — that is the whole point of
+keeping the recipe in the shop's own vocabulary.
 
 ## What this is not
 

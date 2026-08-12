@@ -69,6 +69,42 @@ check('no module imports itself into a cycle it cannot resolve', () => {
   assert(!local.length, `assembly.js has grown local imports (${local.join(', ')}) — it must stay dependency-free so it can be tested headlessly`);
 });
 
+check('the modules the tests depend on have not grown a dependency', () => {
+  // these four are the whole reason the suite runs in a millisecond with no
+  // window: they must not reach for three.js, the DOM or each other
+  for (const f of ['assembly.js', 'skills.js', 'history.js', 'export3d.js']) {
+    assert(src[f], `${f} is gone`);
+    const imports = [...src[f].matchAll(/^\s*import\s.*$/gm)].map(m => m[0].trim());
+    assert(!imports.length, `${f} now imports: ${imports.join(' / ')} — it has to stay headless`);
+    assert(!/\bdocument\.|\bwindow\.|THREE\./.test(src[f]), `${f} reaches for the DOM or three.js`);
+  }
+});
+
+check('the renderer never writes a file itself', () => {
+  // the same rule as the network: the renderer asks main to do a named
+  // thing. A save dialog or an fs call on this side means the sandbox
+  // boundary has been quietly stepped over.
+  for (const [file, text] of Object.entries(src)) {
+    assert(!/require\(['"]fs['"]\)|showSaveDialog|writeFileSync/.test(text),
+      `${file} is touching the filesystem directly`);
+  }
+  assert(/ipcMain\.handle\('model:save'/.test(rd('main.js')), 'nothing in main handles the model export');
+  assert(/saveModel/.test(rd('preload.js')), 'the export bridge is missing from preload');
+});
+
+check('every command the bench can send is one app.js answers', () => {
+  const html = rd('renderer/index.html');
+  const cmds = [...html.matchAll(/data-cmd="([a-z]+)"/g)].map(m => m[1]);
+  assert(cmds.length >= 4, `only ${cmds.length} bench commands in the markup`);
+  // 'fit' is handled by the toolbar listener, the rest go to cad.onCommand
+  const handler = src['app.js'].slice(src['app.js'].indexOf('cad.onCommand = '));
+  const body = handler.slice(0, handler.indexOf('\n};'));
+  for (const c of new Set(cmds)) {
+    if (c === 'fit') continue;
+    assert(body.includes(`'${c}'`), `the bench has a "${c}" button that cad.onCommand ignores`);
+  }
+});
+
 check('every element app.js looks up exists in index.html', () => {
   const html = rd('renderer/index.html');
   const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map(m => m[1]));

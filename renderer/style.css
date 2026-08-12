@@ -120,7 +120,10 @@ canvas:active{cursor:grabbing}
   padding:2px 6px;border-radius:2px}
 .sBar{margin-top:6px;height:3px;border-radius:2px;background:rgba(34,28,20,.16);overflow:hidden}
 .sBar span{display:block;height:100%;width:0;background:var(--hot);transition:width .09s linear}
-#btnExport{width:100%;margin-top:10px}
+/* the traveler is a paper form, so its buttons sit on the paper */
+.erow{margin-top:10px;gap:6px}
+.erow button{flex:1;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.erowNote{margin:6px 0 0;font-size:10.5px;color:#6a6053}
 .tfoot{display:flex;justify-content:space-between;margin-top:12px;padding-top:9px;
   border-top:2px solid #221c14;font:10px var(--mono);letter-spacing:.08em;color:#5d5347;text-transform:uppercase}
 
@@ -209,9 +212,10 @@ body.cadOn #caption,body.cadOn #roomTag{display:none}
 .sk-taught{font-size:10px;opacity:.85}
 .sk-class{font:9.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;
   color:var(--kraft);border:1px solid #3a2f1d;border-radius:2px;padding:2px 5px}
-.sk-forget{padding:1px 6px;font-size:11px;line-height:1.4;border-color:transparent;
+.sk-forget,.sk-again{padding:1px 6px;font-size:11px;line-height:1.4;border-color:transparent;
   background:transparent;color:#5f564a}
 .sk-forget:hover{color:var(--bad);border-color:transparent}
+.sk-again:hover{color:var(--kraft);border-color:transparent}
 .sk-bar{height:3px;border-radius:2px;background:#241d14;margin:7px 0 5px;overflow:hidden}
 .sk-bar span{display:block;height:100%;background:linear-gradient(90deg,var(--kraft-dim),var(--kraft))}
 .sk-meta{font:10px var(--mono);color:#6b6053;letter-spacing:.03em}

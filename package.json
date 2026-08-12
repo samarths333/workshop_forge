@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "test": "node test/solver.test.mjs && node test/geometry.test.mjs && node test/wiring.test.mjs",
+    "test": "node test/solver.test.mjs && node test/geometry.test.mjs && node test/learning.test.mjs && node test/wiring.test.mjs",
     "make": "electron-builder --mac --dir",
     "dmg": "electron-builder --mac"
   },

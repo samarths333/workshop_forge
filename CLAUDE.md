@@ -17,7 +17,7 @@ finished build is distilled into a reusable skill and recalled on the next simil
 npm install          # electron + three
 npm start             # run app
 npm run dev            # run app with --dev (opens detached DevTools)
-npm test                # solver, geometry and wiring checks — no renderer, no window
+npm test                # solver, geometry, learning and wiring checks — no renderer, no window
 npm run make             # electron-builder --mac --dir  → dist/mac/Workshop Forge.app
 npm run dmg               # electron-builder --mac        → dist/Workshop Forge-1.0.0.dmg
 ```
@@ -142,6 +142,22 @@ keyword + class overlap on the next request and `agent.recalledBlock` folds the 
 prompt. `offlinePlan(request, recalled)` will instantiate a learned recipe directly, so a shop that
 has built a lamp once can build a proper lamp with no network.
 
+**Undo keeps whole plans, not diffs (`renderer/history.js`).** A plan is a few kilobytes of JSON and
+a re-solve costs more than a clone, so there is nothing to win by inverting operations — and an
+inverse that applies backwards slightly wrong is a far worse bug than a fat stack. Two details make
+it usable: edits carrying the same `key` within `COALESCE_MS` fold into one entry (the panel fires
+per keystroke, so "0.42" is otherwise four undos), and a state identical to the one on top is
+dropped rather than consuming a slot. `startJob` resets the stack — you cannot undo out of this
+build into the last one.
+
+**Export writes bytes, not geometry (`renderer/export3d.js`).** It is handed triangles three.js
+already tessellated (`world.assemblyMeshes()` returns raw typed arrays plus a matrix, so the
+exporter never imports three) and it writes them. Two conventions, both the classic way an export
+"works" and is still useless if got wrong: everything is scaled ×1000 because the shop thinks in
+metres and every slicer assumes millimetres, and STL is swung Y-up → Z-up because printers are Z-up
+while OBJ is left alone because DCC tools are not. Seam beads collapse into one `seams` object;
+degenerate facets — a cone tip reliably makes a few — are dropped before writing.
+
 ## File map
 
 ```
@@ -157,12 +173,15 @@ renderer/
   textures.js    procedural canvas textures
   agent.js       system prompts, schemas, parsePlan/validatePlan, plan editing, offlinePlan
   cad.js         the bench — CAD viewport over the shop canvas, attach tree, live editing
-  skills.js      distil / score / recall / reinforce / sanitize a learned build. No imports.
+  skills.js      distil / score / recall / reinforce / merge / sanitize a skill. No imports.
+  history.js     bounded undo stack of whole plans, with coalescing. No imports.
+  export3d.js    triangles → binary STL / OBJ. No imports.
   critic.js      solve a plan and audit the result — the bridge from agent to assembly
   app.js         executor state machine + UI wiring
 test/
   solver.test.mjs    solver fixtures, skill library, whole offline pipeline end to end
   geometry.test.mjs  real three.js meshes measured against the solver's assumptions
+  learning.test.mjs  offline build → skill → recall → reinforce, undo, and the exporters
   wiring.test.mjs    imports, DOM ids, IPC bridge, CSP hash, clip coverage
 ```
 
@@ -172,9 +191,12 @@ test/
   that primitive. Parts touch, stack, hang off each other and get welded where they meet — they are
   not constrained and there is no mating. Don't try to make output dimensionally exact (see README
   "What this is not").
-- Run `npm test` before and after touching `assembly.js`, `shapes.js`, `skills.js` or `agent.js`.
-  66 checks, under a second, and they catch the silent failures — a part that hovers 2cm above its
-  support does not throw, and neither does an attachment renumbered onto the wrong parent.
+- Run `npm test` before and after touching `assembly.js`, `shapes.js`, `skills.js`, `agent.js`,
+  `history.js` or `export3d.js`. 103 checks, about a second, and they catch the silent failures — a
+  part that hovers 2cm above its support does not throw, an attachment renumbered onto the wrong
+  parent does not throw, and an STL that exports in metres opens fine and prints 1mm across.
+- `assembly.js`, `skills.js`, `history.js` and `export3d.js` import nothing at all. That is what
+  keeps the suite headless and instant; `wiring.test.mjs` fails if any of them grows an import.
 - When touching the prompt or the schemas in `agent.js`, keep the rules in sync with what
   `validatePlan` actually enforces — the prompt is guidance, `validatePlan` is the contract.
 - `main.js` config (`DEFAULTS`) and the Engine settings panel in the renderer must stay in sync on

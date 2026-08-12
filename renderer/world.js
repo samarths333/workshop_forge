@@ -856,6 +856,34 @@ export class World {
     return solved.instances.length;
   }
 
+  /* Everything standing on the pedestal, as raw triangles in the assembly's
+     own frame — what the exporter needs and nothing more. Kept here rather
+     than in app.js because this is the only file that knows how the group
+     is put together, and kept as typed arrays rather than meshes so that
+     export3d.js never has to import three. */
+  assemblyMeshes() {
+    const out = [];
+    this.assembly.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(this.assembly.matrixWorld).invert();
+    const local = new THREE.Matrix4();
+
+    this.assembly.traverse(o => {
+      const pos = o.isMesh && o.geometry?.attributes?.position;
+      if (!pos) return;
+      const isSeam = !!this.seams && o.parent === this.seams;
+      const inst = o.userData?.instance;
+      local.copy(inv).multiply(o.matrixWorld);
+      out.push({
+        name: inst?.name || o.userData?.spec?.name || `part_${out.length + 1}`,
+        seam: isSeam,
+        position: pos.array,
+        index: o.geometry.index ? o.geometry.index.array : null,
+        matrix: local.elements.slice()
+      });
+    });
+    return out;
+  }
+
   clearAssembly() {
     for (let i = this.assembly.children.length - 1; i >= 0; i--) {
       this.assembly.remove(this.assembly.children[i]);

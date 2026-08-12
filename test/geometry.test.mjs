@@ -12,6 +12,13 @@
 import * as THREE from 'three';
 import { partGeometry, chamferBox } from '../renderer/shapes.js';
 import { effectiveSize, halfExtents, SHAPES, solveAssembly } from '../renderer/assembly.js';
+import { trianglesFrom, toSTL } from '../renderer/export3d.js';
+
+const LAMP = [
+  { name: 'base', shape: 'cylinder', material: 'metal', size: [0.5, 0.12, 0.5] },
+  { name: 'stem', shape: 'rod', material: 'metal', size: [0.14, 0.8, 0.14], attach: { to: 0, face: 'top' } },
+  { name: 'shade', shape: 'cone', material: 'painted', size: [0.44, 0.32, 0.44], attach: { to: 1, face: 'top' } }
+];
 
 let pass = 0, fail = 0;
 const out = [];
@@ -192,6 +199,65 @@ check('a ball is the same ball whichever way it is turned', () => {
   const b = halfExtents('sphere', [0.6, 0.6, 0.6], [D(37), D(51), D(19)]);
   assert(Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9,
     `a rotated sphere grew from ${a[0].toFixed(3)} to ${b[0].toFixed(3)}`);
+});
+
+/* ------------------------------------------------------------------ */
+/* the export, joined up with real three.js matrices                   */
+/* ------------------------------------------------------------------ */
+/* export3d.js takes a Matrix4's `elements` on faith. Column-major is easy
+   to get subtly wrong — a transposed matrix still produces a plausible
+   file, just with every part in the wrong place — so this builds the real
+   meshes, lets three.js compose the real matrices, and measures what comes
+   out of the writer against what the solver said it laid out. */
+check('what comes out of the exporter is what the solver laid out', () => {
+  const solved = solveAssembly(LAMP);
+  const group = new THREE.Group();
+  for (const inst of solved.instances) {
+    const m = new THREE.Mesh(partGeometry(inst.shape, inst.size));
+    m.position.set(...inst.pos);
+    m.rotation.set(...inst.rot);
+    const s = inst.scale || 1;
+    m.scale.set(s, s, s);
+    group.add(m);
+  }
+  group.updateMatrixWorld(true);
+
+  const inv = new THREE.Matrix4().copy(group.matrixWorld).invert();
+  const local = new THREE.Matrix4();
+  const groups = group.children.map((o, i) => {
+    local.copy(inv).multiply(o.matrixWorld);
+    return {
+      name: `p${i}`,
+      tris: trianglesFrom({
+        position: o.geometry.attributes.position.array,
+        index: o.geometry.index ? o.geometry.index.array : null,
+        matrix: local.elements.slice()
+      })
+    };
+  });
+
+  // three.js's own answer for the same assembly
+  const want = new THREE.Box3().setFromObject(group);
+  const stl = toSTL(groups);
+  const dv = new DataView(stl.buffer, stl.byteOffset, stl.byteLength);
+  const n = dv.getUint32(80, true);
+  assert(n > 100, `only ${n} facets for a three-part lamp`);
+
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let f = 0; f < n; f++) {
+    for (let v = 0; v < 3; v++) {
+      for (let a = 0; a < 3; a++) {
+        const q = dv.getFloat32(84 + f * 50 + 12 + v * 12 + a * 4, true);
+        lo[a] = Math.min(lo[a], q); hi[a] = Math.max(hi[a], q);
+      }
+    }
+  }
+  // STL is millimetres and Z-up: (x, y, z) → (x, −z, y)
+  const near = (a, b, m) => assert(Math.abs(a - b) < 0.5, `${m}: ${a.toFixed(2)} vs ${b.toFixed(2)}`);
+  near(hi[0] - lo[0], (want.max.x - want.min.x) * 1000, 'width came out wrong');
+  near(hi[2] - lo[2], (want.max.y - want.min.y) * 1000, 'height did not become Z');
+  near(hi[1] - lo[1], (want.max.z - want.min.z) * 1000, 'depth did not become −Y');
+  near(lo[2], want.min.y * 1000, 'the export does not start where the assembly starts');
 });
 
 console.log(out.join('\n'));

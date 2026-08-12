@@ -299,6 +299,54 @@ function overlapWords(a, b) {
 }
 
 /* ------------------------------------------------------------------ */
+/* folding someone else's library into this one                        */
+/* ------------------------------------------------------------------ */
+/* Import is a merge, not a replace: a shop that has already learned to
+   build a lamp should not lose it by taking someone else's shelf recipe.
+   One skill per class stays the rule, so a collision is decided on
+   confidence — and a hand-taught recipe, at 0.88, beats almost anything
+   that was merely never objected to.
+
+   Whichever recipe wins, the losing side's lessons and source requests are
+   kept. Those are cheap, they are the part a person wrote, and dropping
+   them is how a merge quietly loses the only sentence that stopped the
+   shade coming out as a box. */
+export function mergeLibraries(current, incoming) {
+  const out = sanitize(current).slice();
+  const add = sanitize(incoming);
+  let added = 0, replaced = 0, kept = 0;
+
+  for (const s of add) {
+    const at = out.findIndex(x => x.class === s.class);
+    if (at < 0) {
+      out.unshift(s);
+      added++;
+      continue;
+    }
+    const have = out[at];
+    const win = (s.confidence || 0) > (have.confidence || 0) ? s : have;
+    const lose = win === s ? have : s;
+    const merged = {
+      ...win,
+      lessons: dedupeLessons([...(win.lessons || []), ...(lose.lessons || [])]).slice(0, 6),
+      keywords: [...new Set([...(win.keywords || []), ...(lose.keywords || [])])].slice(0, 16),
+      sourceRequests: [...new Set([...(win.sourceRequests || []), ...(lose.sourceRequests || [])])].slice(0, 6),
+      stats: {
+        uses: Math.max(win.stats?.uses || 1, lose.stats?.uses || 1),
+        cleanFirstPass: Math.max(win.stats?.cleanFirstPass || 0, lose.stats?.cleanFirstPass || 0),
+        corrections: Math.max(win.stats?.corrections || 0, lose.stats?.corrections || 0),
+        taught: Math.max(win.stats?.taught || 0, lose.stats?.taught || 0)
+      },
+      updatedAt: nowISO()
+    };
+    out[at] = merged;
+    if (win === s) replaced++; else kept++;
+  }
+
+  return { skills: out.slice(0, MAX_SKILLS), added, replaced, kept };
+}
+
+/* ------------------------------------------------------------------ */
 /* sanity — a skill file is user-editable and comes off disk           */
 /* ------------------------------------------------------------------ */
 export function sanitize(list) {
