@@ -13,6 +13,8 @@ import { recall, learn, sanitize, mergeLibraries, deterministicReflection, repea
 import { CadView } from './cad.js';
 import { History } from './history.js';
 import { trianglesFrom, toSTL, toOBJ, summarise } from './export3d.js';
+import { assemblyMetrics, bom, bomCSV, formatLen, formatMass, formatVolume } from './metrics.js';
+import { SOURCES, classifyRequest, sourcesFor, searchTerms, enrichRefs, mergeRefs, domainKnowledge } from './library.js';
 
 const $ = s => document.querySelector(s);
 const stage = $('#stage');
@@ -500,16 +502,32 @@ async function requestBuild() {
   /* Go and look at how people actually make this before deciding how to
      make it. Never allowed to fail the build — if nothing comes back, the
      planner just works from the request the way it always did. */
+  /* Where to look depends on what was asked for. A phone stand has a
+     hundred good models published; a turbofan has none, and asking a print
+     site for one wastes the lookup entirely. */
+  const domain = classifyRequest(text);
+  job.domain = domain;
+  const sources = sourcesFor(domain.domain);
+  if (domain.engineering) {
+    log(`that is ${esc(domain.label)} — going to ${sources.map(s => SOURCES[s]?.label || s).join(', ')} instead of the print sites`, 'hi');
+  }
+
   let refs = [];
   try {
-    const r = await window.forge.refs(text);
-    refs = r.refs || [];
+    const r = await window.forge.refs({ term: text, terms: searchTerms(text, domain.domain), sources });
+    refs = enrichRefs(mergeRefs([r.refs || []]));
     if (refs.length) {
       const bySource = refs.reduce((m, x) => (m[x.source] = (m[x.source] || 0) + 1, m), {});
-      log(`looked up ${refs.length} reference design${refs.length === 1 ? '' : 's'} — ${Object.entries(bySource).map(([k, v]) => `${v} on ${k}`).join(', ')}`, 'hi');
-      refs.slice(0, 3).forEach(x => log(`  ref: ${esc(x.title)}`));
+      log(`looked up ${refs.length} reference${refs.length === 1 ? '' : 's'} — ${Object.entries(bySource).map(([k, v]) => `${v} on ${SOURCES[k]?.label || k}`).join(', ')}`, 'hi');
+      refs.slice(0, 3).forEach(x => log(`  ref: ${esc(x.title)}${x.structure?.length ? ` — names ${esc(x.structure.slice(0, 4).join(', '))}` : ''}`));
     } else if (!r.off) {
       (r.tried || []).forEach(t => log('references: ' + esc(t), 'err'));
+    }
+    // even with nothing back, an engineering request still gets the
+    // built-in vocabulary for its domain — that is the point of having one
+    if (!refs.length && domain.engineering) {
+      const k = domainKnowledge(domain.domain);
+      if (k) log(`nothing came back — building from what the shop knows a ${esc(domain.label)} is made of: ${esc(k.parts.slice(0, 5).join(', '))}…`, 'hi');
     }
   } catch (err) {
     log('reference lookup skipped: ' + esc(err.message), 'err');
@@ -808,9 +826,31 @@ $('#cadTools').addEventListener('click', e => {
     mark('#cadTools [data-mode]', b);
   } else if (b.dataset.cmd === 'fit') {
     cad.frameAll();
+  } else if (b.dataset.tool === 'measure') {
+    b.classList.toggle('on', cad.toggleMeasure());
+  } else if (b.dataset.tool === 'isolate') {
+    b.classList.toggle('on', cad.toggleIsolate());
+  } else if (b.dataset.section) {
+    const on = !cad.section.on;
+    cad.setSection({ on });
+    b.classList.toggle('on', on);
   }
 });
 $('#cadExplode').addEventListener('input', e => cad.setExplode(Number(e.target.value)));
+$('#cadUnit').addEventListener('change', e => cad.setUnit(e.target.value));
+$('#cadSectionAxis').addEventListener('change', e => cad.setSection({ axis: Number(e.target.value) }));
+$('#cadSectionAt').addEventListener('input', e => cad.setSection({ offset: Number(e.target.value) }));
+
+/* The parts list, as a shop would order it. */
+$('#cadBom').onclick = async () => {
+  if (!job.solved) { log('nothing on the bench to list', 'err'); return; }
+  const rows = bom(job.solved, planParts(job.plan));
+  const res = await window.forge.saveModel({
+    name: `${slug()}-parts`, ext: 'csv', data: bomCSV(rows, { unit: cad.unit })
+  });
+  if (res?.ok) log(`wrote a parts list — ${rows.length} line${rows.length === 1 ? '' : 's'}, ` +
+    `${rows.reduce((n, r) => n + r.qty, 0)} pieces`, 'ok');
+};
 function mark(sel, on) {
   document.querySelectorAll(sel).forEach(b => b.classList.toggle('on', b === on));
 }
@@ -832,7 +872,9 @@ $('#cadSide').addEventListener('input', e => {
   // half-typed numbers report as "" — leave the part alone until there is
   // a real value, or the model jumps about while you are still typing it
   if (e.target.type === 'number' && e.target.value === '') return;
-  cad.onEdit(cad.selected, { [f]: e.target.value });
+  // the panel is in millimetres, the spec is in metres — cad owns that
+  // conversion because cad owns which unit is on screen
+  cad.onEdit(cad.selected, { [f]: cad.fieldToSpec(f, e.target.value) });
 });
 // a select commits on change, and a text field on blur — either way the
 // panel can safely be rebuilt now, so dependent fields catch up
@@ -868,7 +910,9 @@ cv.addEventListener('pointerup', e => {
     const r = stage.getBoundingClientRect();
     const hit = cad.pick(e.clientX - r.left, e.clientY - r.top, r.height);
     if (hit && hit.cube) cad.setView(hit.cube);
-    else if (hit && 'part' in hit) cad.select(hit.part);
+    else if (hit && 'part' in hit) {
+      if (cad.measure.on) cad.measurePick(hit.part); else cad.select(hit.part);
+    }
   }
   panning = false;
 });
@@ -944,6 +988,9 @@ addEventListener('keydown', e => {
     }
     if (k === 'f') cad.frameAll();
     if (k === 'x') { cad.setMode(cad.mode === 'xray' ? 'shaded' : 'xray'); mark('#cadTools [data-mode]', $(`#cadTools [data-mode="${cad.mode}"]`)); }
+    if (k === 'm') $('#cadMeasure').classList.toggle('on', cad.toggleMeasure());
+    if (k === 'i') $('#cadIsolate').classList.toggle('on', cad.toggleIsolate());
+    if (k === 's') { const on = !cad.section.on; cad.setSection({ on }); $('#cadSectionBtn').classList.toggle('on', on); }
     return;
   }
   if (n >= 0) focusRoom(ROOM_ORDER[n]);

@@ -142,6 +142,24 @@ keyword + class overlap on the next request and `agent.recalledBlock` folds the 
 prompt. `offlinePlan(request, recalled)` will instantiate a learned recipe directly, so a shop that
 has built a lamp once can build a proper lamp with no network.
 
+**Reference lookup is routed, and the routing is pure (`renderer/library.js`).** `classifyRequest`
+decides whether a request is a maker object or an engineering one (propulsion, aerospace, mechanism,
+structure, vehicle, robotics); `sourcesFor` picks the sources; `main.js` only executes the named
+lookups (Thingiverse, Printables, Wikipedia, Commons, NTRS, Openverse), all in one
+`Promise.allSettled` so four sequential timeouts cannot stall a build. Every engineering domain also
+carries a hand-written parts vocabulary and a paragraph of how the real thing goes together — that
+is what `technicalBlock` folds into the planning AND critique prompts, and what `domainParts` turns
+into real specs so `offlinePlan` can build an engine with the network down. `wiring.test.mjs` fails
+if `library.js` names a source `main.js` cannot fetch.
+
+**The bench reports engineering numbers (`renderer/metrics.js`).** Volume, area, mass by material
+density, centre of mass, and whether the centre of mass sits inside the ground footprint — the last
+one is the check that catches a build the solver is perfectly happy with and which falls over the
+moment it is real. Everything derives from `effectiveSize`, so a mass always describes the object on
+screen rather than the raw spec; `metrics.js` is allowed exactly one import (`assembly.js`) and the
+wiring test enforces it. The panel is in millimetres and the spec stays in metres — `cad.fieldToSpec`
+owns that conversion, because cad owns which unit is on screen.
+
 **Undo keeps whole plans, not diffs (`renderer/history.js`).** A plan is a few kilobytes of JSON and
 a re-solve costs more than a clone, so there is nothing to win by inverting operations — and an
 inverse that applies backwards slightly wrong is a far worse bug than a fat stack. Two details make
@@ -176,12 +194,15 @@ renderer/
   skills.js      distil / score / recall / reinforce / merge / sanitize a skill. No imports.
   history.js     bounded undo stack of whole plans, with coalescing. No imports.
   export3d.js    triangles → binary STL / OBJ. No imports.
+  library.js     source routing, domain vocabularies, structure mining. No imports.
+  metrics.js     volume / mass / centre of mass / clearance / BOM / units. assembly.js only.
   critic.js      solve a plan and audit the result — the bridge from agent to assembly
   app.js         executor state machine + UI wiring
 test/
   solver.test.mjs    solver fixtures, skill library, whole offline pipeline end to end
   geometry.test.mjs  real three.js meshes measured against the solver's assumptions
   learning.test.mjs  offline build → skill → recall → reinforce, undo, and the exporters
+  bench.test.mjs     mass and clearance arithmetic, units, BOM, source routing, prompt blocks
   wiring.test.mjs    imports, DOM ids, IPC bridge, CSP hash, clip coverage
 ```
 
@@ -192,7 +213,7 @@ test/
   not constrained and there is no mating. Don't try to make output dimensionally exact (see README
   "What this is not").
 - Run `npm test` before and after touching `assembly.js`, `shapes.js`, `skills.js`, `agent.js`,
-  `history.js` or `export3d.js`. 103 checks, about a second, and they catch the silent failures — a
+  `history.js` or `export3d.js`. 137 checks, about a second, and they catch the silent failures — a
   part that hovers 2cm above its support does not throw, an attachment renumbered onto the wrong
   parent does not throw, and an STL that exports in metres opens fine and prints 1mm across.
 - `assembly.js`, `skills.js`, `history.js` and `export3d.js` import nothing at all. That is what

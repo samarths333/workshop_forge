@@ -246,7 +246,7 @@ test/
 
 `assembly.js`, `skills.js`, `history.js` and `export3d.js` import nothing — no three.js, no DOM —
 which is why the whole planning, layout, memory and export path can be tested in node with
-`npm test` and no window on screen. 103 checks, about a second.
+`npm test` and no window on screen. 137 checks, about a second.
 
 Zero downloaded assets. Every texture — the corrugation, the flute edges, the marker-drawn hanging
 signs, Rivet's face — is drawn into a `<canvas>` at startup.

@@ -19,7 +19,10 @@ const DEFAULTS = {
   ollamaBase: 'http://127.0.0.1:11434',
   temperature: 0.7,
   references: 'auto',                            // auto | thingiverse | printables | off
-  thingiverseToken: ''
+  /* Shipped with a working app token so reference lookup does the right
+     thing out of the box. Anyone who wants their own quota can paste a
+     different one into Engine and it wins from then on. */
+  thingiverseToken: 'ad5cb92d2ae88be9083a9fe9895d673c'
 };
 function loadCfg() {
   try { return Object.assign({}, DEFAULTS, JSON.parse(fs.readFileSync(cfgPath(), 'utf8'))); }
@@ -319,28 +322,161 @@ async function searchPrintables(term, limit) {
   })).filter(x => x.title);
 }
 
-ipcMain.handle('refs:search', async (_e, term) => {
+/* ------------------------------------------------------------------ */
+/* the engineering sources                                             */
+/* ------------------------------------------------------------------ */
+/* Thingiverse has no turbofan and no wing spar. What it has is a keychain
+   shaped like a jet engine. For anything above the level of "things that
+   print in four hours" the useful references are encyclopedic and
+   technical, so those get their own fetchers here.
+
+   Same contract as the maker sites: every one of these is best-effort, and
+   a source that is down, rate-limited or has changed its response shape
+   returns nothing and says why. None of them is ever allowed to fail a
+   build. */
+
+async function getJSON(url, ms = 12000, headers = {}) {
+  const r = await withTimeout(signal => fetch(url, {
+    signal, headers: { 'User-Agent': UA, Accept: 'application/json', ...headers }
+  }), ms);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/* Wikipedia — what the thing is made of, and what the parts are called.
+   One round trip: the search generator hands its results straight to the
+   extract module, so a query returns titles AND prose together. */
+async function searchWikipedia(term, limit) {
+  const url = 'https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*'
+    + '&prop=extracts&explaintext=1&exintro=0&exchars=2200&redirects=1'
+    + `&generator=search&gsrsearch=${encodeURIComponent(term)}&gsrlimit=${limit}&gsrnamespace=0`;
+  const j = await getJSON(url);
+  const pages = j?.query?.pages;
+  if (!pages) throw new Error('nothing found');
+  return Object.values(pages)
+    .filter(p => p && p.title && p.extract)
+    .sort((a, b) => (a.index || 0) - (b.index || 0))
+    .slice(0, limit)
+    .map(p => ({
+      source: 'wikipedia',
+      title: strip(p.title).slice(0, 90),
+      url: `https://en.wikipedia.org/?curid=${p.pageid}`,
+      likes: 0,
+      tags: [],
+      // the extract is the raw material structureFrom() mines in the
+      // renderer — main does not interpret it, it just carries it
+      summary: strip(p.extract).slice(0, 2000)
+    }));
+}
+
+/* Wikimedia Commons — the cutaways and schematics themselves. Biased
+   towards drawings on purpose: a photograph of an engine tells the planner
+   nothing it can use, a labelled section drawing tells it everything. */
+async function searchCommons(term, limit) {
+  const url = 'https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*'
+    + `&list=search&srnamespace=6&srlimit=${limit}`
+    + `&srsearch=${encodeURIComponent(`${term} (diagram OR schematic OR cutaway OR cross-section)`)}`;
+  const j = await getJSON(url);
+  const hits = j?.query?.search;
+  if (!Array.isArray(hits)) throw new Error('unexpected response shape');
+  return hits.slice(0, limit).map(h => ({
+    source: 'commons',
+    title: strip(h.title).replace(/^File:/, '').replace(/\.(svg|png|jpe?g|gif)$/i, '').slice(0, 90),
+    url: `https://commons.wikimedia.org/wiki/${encodeURIComponent(h.title)}`,
+    likes: 0,
+    tags: [],
+    summary: strip(h.snippet).slice(0, 200)
+  })).filter(x => x.title);
+}
+
+/* NASA's technical reports — half a century of engineering documents on
+   anything that flies, all public domain. The abstracts alone are dense
+   with the right vocabulary. */
+async function searchNTRS(term, limit) {
+  const j = await getJSON(`https://ntrs.nasa.gov/api/citations/search?q=${encodeURIComponent(term)}&size=${limit}`, 15000);
+  const hits = j?.results;
+  if (!Array.isArray(hits)) throw new Error('unexpected response shape');
+  return hits.slice(0, limit).map(h => ({
+    source: 'ntrs',
+    title: strip(h.title).slice(0, 90),
+    url: h.id ? `https://ntrs.nasa.gov/citations/${h.id}` : '',
+    likes: 0,
+    tags: (h.subjectCategories || []).slice(0, 4).map(s => strip(s)),
+    summary: strip(h.abstract).slice(0, 600)
+  })).filter(x => x.title && x.summary);
+}
+
+/* Openverse — openly licensed images across a lot of collections, which is
+   where the good exploded-view diagrams tend to be. */
+async function searchOpenverse(term, limit) {
+  const j = await getJSON(`https://api.openverse.org/v1/images/?q=${encodeURIComponent(term + ' diagram')}&page_size=${limit}`);
+  const hits = j?.results;
+  if (!Array.isArray(hits)) throw new Error('unexpected response shape');
+  return hits.slice(0, limit).map(h => ({
+    source: 'openverse',
+    title: strip(h.title).slice(0, 90),
+    url: h.foreign_landing_url || h.url || '',
+    likes: 0,
+    tags: (h.tags || []).slice(0, 5).map(t => strip(t.name || t)).filter(Boolean),
+    summary: ''
+  })).filter(x => x.title);
+}
+
+const FETCHERS = {
+  thingiverse: (cfg, term, n) => searchThingiverse(cfg, term, n),
+  printables:  (_c, term, n) => searchPrintables(term, n),
+  wikipedia:   (_c, term, n) => searchWikipedia(term, n),
+  commons:     (_c, term, n) => searchCommons(term, n),
+  ntrs:        (_c, term, n) => searchNTRS(term, n),
+  openverse:   (_c, term, n) => searchOpenverse(term, n)
+};
+
+/* The renderer decides WHICH sources to ask — that is routing, it is pure,
+   and it is tested in library.js. Main just runs the named lookups. */
+ipcMain.handle('refs:search', async (_e, query) => {
   const cfg = loadCfg();
-  const query = String(term || '').trim().slice(0, 120);
-  if (!query) return { ok: false, refs: [], tried: ['empty request'] };
+  const q = typeof query === 'string' ? { term: query } : (query || {});
+  const term = String(q.term || '').trim().slice(0, 120);
+  const alt = (Array.isArray(q.terms) ? q.terms : []).map(t => String(t).slice(0, 120)).filter(Boolean);
+  if (!term) return { ok: false, refs: [], tried: ['empty request'] };
   if (cfg.references === 'off') return { ok: false, off: true, refs: [], tried: [] };
 
+  // an explicit setting still pins the maker sites, the way it always did
+  let wanted = Array.isArray(q.sources) && q.sources.length ? q.sources : ['thingiverse', 'printables'];
+  if (cfg.references === 'thingiverse') wanted = wanted.filter(s => s !== 'printables');
+  if (cfg.references === 'printables') wanted = wanted.filter(s => s !== 'thingiverse');
+
   const refs = [], tried = [];
-  const wantThing = cfg.references === 'auto' || cfg.references === 'thingiverse';
-  const wantPrint = cfg.references === 'auto' || cfg.references === 'printables';
+  const perSource = Math.max(3, Math.ceil(10 / wanted.length));
 
-  if (wantThing) {
-    try { refs.push(...await searchThingiverse(cfg, query, 8)); }
-    catch (e) { tried.push(`thingiverse: ${e.message}`); }
-  }
-  // only fall through to Printables if Thingiverse came up short — the
-  // openly-licensed source is the one we would rather be learning from
-  if (wantPrint && refs.length < 4) {
-    try { refs.push(...await searchPrintables(query, 6)); }
-    catch (e) { tried.push(`printables: ${e.message}`); }
-  }
+  /* All of them at once. Four sequential lookups at up to fifteen seconds
+     each is a quarter of a minute of a robot standing still before he has
+     even been told what to build. */
+  const runs = await Promise.allSettled(wanted.map(async name => {
+    const fn = FETCHERS[name];
+    if (!fn) throw new Error('no such source');
+    let out = await fn(cfg, term, perSource);
+    // an encyclopedia often wants the noun on its own rather than the
+    // sentence someone asked in
+    if (!out.length && alt.length) {
+      for (const t of alt) {
+        out = await fn(cfg, t, perSource);
+        if (out.length) break;
+      }
+    }
+    return { name, out };
+  }));
 
-  return { ok: refs.length > 0, refs: refs.slice(0, 12), tried };
+  runs.forEach((r, i) => {
+    if (r.status === 'fulfilled') {
+      refs.push(...r.value.out);
+      if (!r.value.out.length) tried.push(`${wanted[i]}: nothing found`);
+    } else {
+      tried.push(`${wanted[i]}: ${r.reason?.message || 'failed'}`);
+    }
+  });
+
+  return { ok: refs.length > 0, refs: refs.slice(0, 16), tried, sources: wanted };
 });
 
 ipcMain.handle('cfg:get', () => loadCfg());

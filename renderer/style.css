@@ -185,6 +185,17 @@ canvas:active{cursor:grabbing}
 .cadPropsBody .empty{margin:0}
 .cadDelete{margin-top:6px;font-size:11.5px;color:#a56058;border-color:#3a2723;background:transparent}
 .cadDelete:hover{color:#e0655a;border-color:#5c3630}
+/* the engineering readouts */
+.cadMetrics{display:flex;flex-wrap:wrap;gap:4px 10px;padding:7px 2px 2px;
+  font:10px var(--mono);color:#7d8b9c;letter-spacing:.02em}
+.cadMetrics span{white-space:nowrap}
+#cadStats .cadNum{color:#bcd0e4;font-weight:600}
+#cadStats .ok{color:#9ed17e}
+#cadStats .cadMeasure{display:block;margin-top:7px;padding-top:7px;
+  border-top:1px solid #232a33;color:#cfe0f0;line-height:1.6}
+#cadTools select{background:#141920;color:#c8d6e4;border:1px solid #2c3540;
+  border-radius:3px;font:11px var(--ui);padding:4px 5px}
+#cadTools input[type=range]{width:78px}
 .cadActions{display:flex;gap:7px;padding:11px 12px 6px;border-top:1px solid #232a33}
 .cadActions button{flex:1;font-size:11.5px;padding:7px 6px}
 #cadTeachNote{padding:0 12px 12px;margin:0}

@@ -72,11 +72,37 @@ check('no module imports itself into a cycle it cannot resolve', () => {
 check('the modules the tests depend on have not grown a dependency', () => {
   // these four are the whole reason the suite runs in a millisecond with no
   // window: they must not reach for three.js, the DOM or each other
-  for (const f of ['assembly.js', 'skills.js', 'history.js', 'export3d.js']) {
+  for (const f of ['assembly.js', 'skills.js', 'history.js', 'export3d.js', 'library.js']) {
     assert(src[f], `${f} is gone`);
     const imports = [...src[f].matchAll(/^\s*import\s.*$/gm)].map(m => m[0].trim());
     assert(!imports.length, `${f} now imports: ${imports.join(' / ')} — it has to stay headless`);
     assert(!/\bdocument\.|\bwindow\.|THREE\./.test(src[f]), `${f} reaches for the DOM or three.js`);
+  }
+});
+
+check('the bench arithmetic stays testable', () => {
+  // metrics.js is allowed exactly one dependency: the solver's own idea of
+  // how big a part is. Anything else and a mass can no longer be checked
+  // in node against the thing that was actually drawn.
+  const imports = [...src['metrics.js'].matchAll(/from\s*['"]\.\/([^'"]+)['"]/g)].map(m => m[1]);
+  assert(imports.every(i => i === 'assembly.js'),
+    `metrics.js imports ${imports.join(', ')} — only assembly.js is allowed`);
+});
+
+check('the shop looks things up in main, and decides where to look in the renderer', () => {
+  // routing is pure and tested; fetching is not and lives on the other side
+  const lib = src['library.js'];
+  assert(/export function sourcesFor/.test(lib), 'the router is gone');
+  const main = rd('main.js');
+  for (const s of ['wikipedia', 'commons', 'ntrs', 'openverse']) {
+    assert(new RegExp(`${s}:\\s*\\(`, 'i').test(main) || new RegExp(`search${s}`, 'i').test(main),
+      `library.js can route to "${s}" but main.js cannot fetch it`);
+  }
+  // and every source the renderer names must be one main can actually run
+  const named = [...lib.matchAll(/^\s{2}([a-z]+):\s*\{ label:/gm)].map(m => m[1]);
+  assert(named.length >= 5, `only ${named.length} sources declared`);
+  for (const s of named) {
+    assert(new RegExp(`${s}:\\s*\\(`).test(main), `"${s}" is declared in library.js but has no fetcher in main.js`);
   }
 });
 

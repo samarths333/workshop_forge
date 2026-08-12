@@ -1,5 +1,6 @@
 import { ACTION_IDS, CLIP_BY_ID, ACTIONS_BY_ROOM } from './animations.js';
 import { SHAPES, MATERIALS, FACES, ARRAY_MODES } from './assembly.js';
+import { SOURCES, classifyRequest, technicalBlock, domainKnowledge, domainParts } from './library.js';
 
 export const ROOM_KEYS = ['software', 'cardboard', 'finished', 'metal'];
 export { SHAPES, MATERIALS };
@@ -145,7 +146,11 @@ Worked example — a four-wheeled rover
    degree back", "rocket, 4 fins, screw-on nose" — and that is exactly the
    information a model guessing from two words does not have. */
 export function referenceBlock(refs) {
-  if (!refs || !refs.length) return '';
+  // only the maker sites belong in this block — an encyclopedia article is
+  // not "a real published design", and describing it as one invites the
+  // planner to copy a title
+  refs = (refs || []).filter(r => SOURCES[r.source]?.kind !== 'engineering');
+  if (!refs.length) return '';
   const lines = refs.slice(0, 10).map(r => {
     const tags = r.tags?.length ? `\n      tags: ${r.tags.join(', ')}` : '';
     const sum = r.summary ? `\n      "${r.summary.slice(0, 150)}"` : '';
@@ -170,6 +175,16 @@ order. What was actually asked for still wins where the two disagree.
 `;
 }
 
+/* An engineering request gets a different block: what the real thing is
+   made of, in the right words, rather than what people have published a
+   print of. The domain is worked out from the request here so no caller
+   has to remember to pass it. */
+export function engineeringBlock(request, refs) {
+  const d = classifyRequest(request);
+  if (!d.engineering) return '';
+  return technicalBlock(request, refs, d.domain);
+}
+
 export function buildMessages(request, recalled, refs) {
   const system = `You are the shop foreman for a four-room fabrication workshop. A cardboard robot named Rivet does the work with his hands. Your job is to turn a build request into an ordered list of shop steps.
 
@@ -192,7 +207,7 @@ RULES
 7. The last step is in "finished", action "present".
 
 ${GEOMETRY_RULES}
-${referenceBlock(refs)}${recalledBlock(recalled)}
+${referenceBlock(refs)}${engineeringBlock(request, refs)}${recalledBlock(recalled)}
 SHAPE OF THE OUTPUT
 {"title":"...","summary":"one sentence","steps":[{"room":"metal","action":"weld","say":"Welding the legs on.","seconds":5,"part":{"name":"leg","shape":"rod","material":"metal","size":[0.12,0.7,0.12],"attach":{"to":0,"face":"bottom"},"array":{"mode":"quad","radius":0.42}}}]}`;
 
@@ -260,6 +275,14 @@ export function buildCritiqueMessages(request, plan, issues, description, refs) 
     ? `\nWHAT A REAL ONE HAS\nPublished designs for this, for comparison. If they all have a part and this build does not, that is a fault worth listing:\n${refs.slice(0, 8).map(r => `  · ${r.title}${r.tags?.length ? ` — ${r.tags.slice(0, 4).join(', ')}` : ''}`).join('\n')}\n`
     : '';
 
+  /* The inspector gets the engineering vocabulary too, otherwise it passes
+     a "turbofan" that is a tube with a cone on it — it has no way to know
+     that a real one has a fan, a compressor, a combustor and a turbine. */
+  const k = domainKnowledge(classifyRequest(request).domain);
+  const expected = k
+    ? `\nWHAT ONE OF THESE IS MADE OF\n${k.note}\nA real one has: ${k.parts.join(', ')}.\nA build missing the parts that define it fails, however tidy the geometry is.\n`
+    : '';
+
   const system = `You are inspecting a build on the shop pedestal before Rivet starts cutting. Be blunt. Would someone who asked for this recognise it?
 
 You get the parts as they will actually stand once assembled — the shop has already resolved every attachment, dropped anything unsupported onto the part below it, and separated anything overlapping. So the positions below are real. Judge the OBJECT, not the arithmetic.
@@ -273,7 +296,7 @@ A build fails if it is a heap of primitives, if the features that identify the o
 
 GEOMETRY ALREADY CHECKED AUTOMATICALLY:
 ${found}
-${against}
+${against}${expected}
 RULES
 1. Return ONLY a JSON object. No prose, no fences.
 2. "reads_as" is what this currently looks like to you, plainly. If it looks like nothing, say so.
@@ -702,7 +725,15 @@ const GENERIC = [
    than any keyword table, so it wins. */
 export function offlinePlan(request, recalled) {
   const learned = recalled?.skill?.recipe?.parts?.length ? recalled.skill.recipe.parts : null;
-  const hint = learned ? { parts: learned, metal: true } : (HINTS.find(h => h.re.test(request)) || { parts: GENERIC, metal: true });
+  /* With no engine and nothing recalled, an engineering request would fall
+     through to the generic box stack — the one case where the offline
+     planner was genuinely useless. The domain vocabulary is a far better
+     starting point than three boxes. */
+  const d = learned ? null : classifyRequest(request);
+  const engineered = d?.engineering ? domainParts(d.domain) : null;
+  const hint = learned ? { parts: learned, metal: true }
+    : engineered ? { parts: engineered, metal: true }
+    : (HINTS.find(h => h.re.test(request)) || { parts: GENERIC, metal: true });
   const title = request.trim().replace(/^(build|make|design|create)\s+(me\s+)?(an?\s+)?/i, '').slice(0, 60) || 'Shop build';
 
   const parts = hint.parts.map(p => ({

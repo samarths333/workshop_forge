@@ -88,7 +88,28 @@
           <label for="cadExplode">Explode</label>
           <input type="range" id="cadExplode" min="0" max="1" step="0.01" value="0">
         </div>
-        <div class="cadGroup"><button data-cmd="fit">Fit</button></div>
+        <div class="cadGroup">
+          <button id="cadMeasure" data-tool="measure" title="clearance between two parts — M">Measure</button>
+          <button id="cadIsolate" data-tool="isolate" title="hide everything else — I">Isolate</button>
+        </div>
+        <div class="cadGroup">
+          <button data-section="on" id="cadSectionBtn" title="cut through it — S">Section</button>
+          <select id="cadSectionAxis" title="which way to cut">
+            <option value="0">YZ</option>
+            <option value="1">XZ</option>
+            <option value="2">XY</option>
+          </select>
+          <input type="range" id="cadSectionAt" min="-1.2" max="1.2" step="0.01" value="0" title="where to cut">
+        </div>
+        <div class="cadGroup">
+          <select id="cadUnit" title="the unit every field is in">
+            <option value="mm">mm</option>
+            <option value="cm">cm</option>
+            <option value="m">m</option>
+          </select>
+          <button data-cmd="fit">Fit</button>
+          <button id="cadBom" title="parts list as CSV">BOM</button>
+        </div>
       </div>
 
       <aside id="cadSide" class="cadPanel">

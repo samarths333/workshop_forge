@@ -21,6 +21,10 @@ import * as THREE from 'three';
 import { partGeometry, partMaterial } from './shapes.js';
 import { SHAPES, MATERIALS, FACES, ARRAY_MODES } from './assembly.js';
 import { cubeFaceTex } from './textures.js';
+import {
+  assemblyMetrics, partMetrics, measureBetween,
+  formatLen, formatMass, formatVolume, toUnit, parseLen, UNITS
+} from './metrics.js';
 
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -58,6 +62,16 @@ export class CadView {
     this.ortho = false;
     this.onEdit = null;                   // (index, patch) → app re-solves
     this.onCommand = null;                // ('add' | 'delete' | 'teach' | 'rebuild')
+
+    /* Nobody works in metres. The shop does, the solver does, and every
+       number a person reads or types here is millimetres unless they say
+       otherwise — which is the difference between a model viewer and
+       something you can actually dimension a part in. */
+    this.unit = 'mm';
+    this.measure = { on: false, a: null, b: null, result: null };
+    this.isolated = false;
+    this.section = { on: false, axis: 0, offset: 0 };
+    this.clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
 
     /* ---- scene ---- */
     this.scene = new THREE.Scene();
@@ -206,6 +220,8 @@ export class CadView {
     this.applyExplode();
     this.applyMode();
     this.applySelection();
+    // fresh materials come back without the cutting plane on them
+    if (this.section.on) this.setSection({});
   }
 
   applyExplode() {
@@ -277,6 +293,79 @@ export class CadView {
 
   setMode(m) { this.mode = m; this.applyMode(); this.applySelection(); }
   setExplode(v) { this.explodeAmount = v; this.applyExplode(); this.applySelection(); }
+
+  /* ---------------------------------------------------------------- */
+  /* units, measuring, isolating, sectioning                           */
+  /* ---------------------------------------------------------------- */
+  setUnit(u) {
+    this.unit = UNITS.includes(u) ? u : 'mm';
+    this.renderPanels(true);
+  }
+
+  /* A length field shows and accepts the current unit; everything else is
+     passed through untouched. Kept here so app.js never has to know what
+     the panel is currently displaying in. */
+  fieldToSpec(field, raw) {
+    if (!['sx', 'sy', 'sz', 'dx', 'dy', 'dz', 'radius'].includes(field)) return raw;
+    const m = parseLen(raw, this.unit);
+    return m == null ? raw : m;
+  }
+
+  toggleMeasure(on) {
+    this.measure.on = on ?? !this.measure.on;
+    this.measure.a = this.measure.b = null;
+    this.measure.result = null;
+    this.renderStats();
+    return this.measure.on;
+  }
+
+  /* Click two parts and get the number that actually matters: the air
+     between them, and which way they are closest to fouling. */
+  measurePick(src) {
+    if (!this.measure.on || src == null) return;
+    const m = this.measure;
+    if (m.a == null || m.b != null) { m.a = src; m.b = null; m.result = null; }
+    else if (src !== m.a) {
+      m.b = src;
+      const A = this.solved?.instances.find(i => i.src === m.a);
+      const B = this.solved?.instances.find(i => i.src === m.b);
+      m.result = measureBetween(A, B);
+    }
+    this.renderStats();
+  }
+
+  /* Everything except the selected part out of the way. On a forty-part
+     assembly this is the only way to see what you are editing. */
+  toggleIsolate() {
+    this.isolated = !this.isolated;
+    if (this.isolated && this.selected != null) {
+      this.hidden = new Set(this.parts.map((_, i) => i).filter(i => i !== this.selected));
+    } else {
+      this.hidden = new Set();
+      this.isolated = false;
+    }
+    this.applyMode();
+    this.renderPanels();
+    return this.isolated;
+  }
+
+  /* A cutting plane through the assembly. Half of what a section view is
+     for is checking that the inside of something is not solid. */
+  setSection(patch = {}) {
+    Object.assign(this.section, patch);
+    const s = this.section;
+    const n = [[-1, 0, 0], [0, -1, 0], [0, 0, -1]][s.axis] || [-1, 0, 0];
+    // normal points back down the axis, so the plane keeps everything on
+    // the near side of the offset and cuts away the rest
+    this.clipPlane.normal.set(n[0], n[1], n[2]);
+    this.clipPlane.constant = s.offset;
+    this.renderer.localClippingEnabled = s.on;
+    for (const m of this.meshes) {
+      m.mesh.material.clippingPlanes = s.on ? [this.clipPlane] : null;
+      m.mesh.material.clipShadows = s.on;
+      m.mesh.material.needsUpdate = true;
+    }
+  }
 
   setView(name) {
     const v = VIEWS[name] || VIEWS.iso;
@@ -473,6 +562,13 @@ export class CadView {
       .join('');
     const rot = (p.rot || [0, 0, 0]).map(r => Math.round((r * 180) / Math.PI));
     const arr = p.array || {};
+    const u = this.unit;
+    // fields carry the current unit, and the step follows it — 1mm steps
+    // in millimetres, not the 0.02m that made the arrows useless
+    const L = v => +toUnit(Number(v) || 0, u).toFixed(u === 'm' ? 3 : 1);
+    const step = { mm: 1, cm: 0.1, m: 0.01 }[u];
+    const inst = this.solved?.instances.find(x => x.src === i);
+    const pm = inst ? partMetrics(inst) : null;
 
     el.innerHTML = `
       <label class="cadF"><span>Name</span><input data-f="name" value="${esc(p.name || '')}"></label>
@@ -481,10 +577,15 @@ export class CadView {
         <label class="cadF"><span>Material</span><select data-f="material">${opt(MATERIALS, p.material)}</select></label>
       </div>
       <div class="cadTrip">
-        <label class="cadF"><span>Width</span><input type="number" step="0.02" min="0.15" max="2.5" data-f="sx" value="${p.size[0]}"></label>
-        <label class="cadF"><span>Height</span><input type="number" step="0.02" min="0.15" max="2.5" data-f="sy" value="${p.size[1]}"></label>
-        <label class="cadF"><span>Depth</span><input type="number" step="0.02" min="0.15" max="2.5" data-f="sz" value="${p.size[2]}"></label>
+        <label class="cadF"><span>Width ${u}</span><input type="number" step="${step}" data-f="sx" value="${L(p.size[0])}"></label>
+        <label class="cadF"><span>Height ${u}</span><input type="number" step="${step}" data-f="sy" value="${L(p.size[1])}"></label>
+        <label class="cadF"><span>Depth ${u}</span><input type="number" step="${step}" data-f="sz" value="${L(p.size[2])}"></label>
       </div>
+      ${pm ? `<div class="cadMetrics">
+        <span title="estimated from the primitive, not a solid model">${formatVolume(pm.volume)}</span>
+        <span>${formatMass(pm.mass)} in ${esc(p.material)}</span>
+        <span>${(pm.density).toFixed(0)} kg/m³</span>
+      </div>` : ''}
       <div class="cadTrip">
         <label class="cadF"><span>Rot X°</span><input type="number" step="15" min="-180" max="180" data-f="rx" value="${rot[0]}"></label>
         <label class="cadF"><span>Rot Y°</span><input type="number" step="15" min="-180" max="180" data-f="ry" value="${rot[1]}"></label>
@@ -499,31 +600,46 @@ export class CadView {
         <label class="cadF"><span>Face</span><select data-f="face"${p.attach ? '' : ' disabled'}>${opt(FACES, p.attach ? p.attach.face : 'top')}</select></label>
       </div>
       <div class="cadTrip">
-        <label class="cadF"><span>Nudge X</span><input type="number" step="0.05" data-f="dx" value="${p.attach?.dx ?? 0}"${p.attach ? '' : ' disabled'}></label>
-        <label class="cadF"><span>Nudge Y</span><input type="number" step="0.05" data-f="dy" value="${p.attach?.dy ?? 0}"${p.attach ? '' : ' disabled'}></label>
-        <label class="cadF"><span>Nudge Z</span><input type="number" step="0.05" data-f="dz" value="${p.attach?.dz ?? 0}"${p.attach ? '' : ' disabled'}></label>
+        <label class="cadF"><span>Offset X ${u}</span><input type="number" step="${step}" data-f="dx" value="${L(p.attach?.dx ?? 0)}"${p.attach ? '' : ' disabled'}></label>
+        <label class="cadF"><span>Offset Y ${u}</span><input type="number" step="${step}" data-f="dy" value="${L(p.attach?.dy ?? 0)}"${p.attach ? '' : ' disabled'}></label>
+        <label class="cadF"><span>Offset Z ${u}</span><input type="number" step="${step}" data-f="dz" value="${L(p.attach?.dz ?? 0)}"${p.attach ? '' : ' disabled'}></label>
       </div>
 
       <h4>How many</h4>
       <div class="cadTrip">
         <label class="cadF"><span>Pattern</span><select data-f="mode">${opt(ARRAY_MODES, arr.mode || 'none')}</select></label>
         <label class="cadF"><span>Count</span><input type="number" step="1" min="2" max="8" data-f="count" value="${arr.count ?? 4}"></label>
-        <label class="cadF"><span>Spread</span><input type="number" step="0.05" min="0.05" max="2" data-f="radius" value="${arr.radius ?? 0.4}"></label>
+        <label class="cadF"><span>Spread ${u}</span><input type="number" step="${step}" data-f="radius" value="${L(arr.radius ?? 0.4)}"></label>
       </div>
 
       <button class="cadDelete" data-cmd="delete">Scrap this part</button>`;
   }
 
+  /* The numbers a person checks before they commit to cutting anything:
+     how big, how heavy, what it is made of, and whether it will stand up. */
   renderStats() {
     const el = this.dom.stats;
     if (!this.solved || !this.solved.instances.length) { el.textContent = 'no assembly'; return; }
-    const b = this.solved.bounds;
-    const dims = [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]].map(v => v.toFixed(2));
+
+    const u = this.unit;
+    const m = assemblyMetrics(this.solved);
+    const dims = m.size.map(v => formatLen(v, u, false)).join(' × ');
+    const mats = m.byMaterial.slice(0, 3)
+      .map(x => `${x.material} ${formatMass(x.mass)}`).join(' · ');
+
+    const meas = this.measure.on ? measureLine(this.measure, this.parts, u) : '';
+
     el.innerHTML =
-      `<b>${dims[0]} × ${dims[1]} × ${dims[2]} m</b>` +
-      `<span>${this.solved.instances.length} parts from ${this.parts.length} operations</span>` +
-      `<span>${this.solved.joints.length} joints</span>` +
-      (this.solved.fit < 0.999 ? `<span class="warn">scaled to ${Math.round(this.solved.fit * 100)}% to fit</span>` : '');
+      `<b>${dims} ${u}</b>` +
+      `<span>${m.parts} parts from ${this.parts.length} operations · ${this.solved.joints.length} joints</span>` +
+      `<span class="cadNum">${formatMass(m.mass)} · ${formatVolume(m.volume)} of material</span>` +
+      (mats ? `<span>${esc(mats)}</span>` : '') +
+      `<span>centre of mass ${formatLen(m.com[1], u)} up</span>` +
+      (m.stable
+        ? `<span class="ok">stands up — mass is over the base</span>`
+        : `<span class="warn">it topples: the centre of mass is ${Math.round((m.tipRatio - 1) * 100)}% outside the footprint</span>`) +
+      (this.solved.fit < 0.999 ? `<span class="warn">scaled to ${Math.round(this.solved.fit * 100)}% to fit the pedestal</span>` : '') +
+      meas;
   }
 }
 
@@ -536,6 +652,22 @@ function faceFromNormal(v) {
   if (big === 0) return v.x > 0 ? 'right' : 'left';
   if (big === 1) return v.y > 0 ? 'top' : 'bottom';
   return v.z > 0 ? 'front' : 'back';
+}
+
+/* The measuring readout. Clearance is the number people came for; centre
+   to centre is there because it is the one they will ask for next. */
+function measureLine(meas, parts, unit) {
+  const name = i => esc(parts[i]?.name || parts[i]?.shape || `part ${i}`);
+  if (meas.a == null) return `<span class="cadMeasure">measuring — click the first part</span>`;
+  if (meas.b == null) return `<span class="cadMeasure">measuring from <b>${name(meas.a)}</b> — click the second</span>`;
+  const r = meas.result;
+  if (!r) return `<span class="cadMeasure">nothing to measure</span>`;
+  const state = r.interfering
+    ? `<b class="warn">interfering by ${formatLen(-r.gap, unit)}</b>`
+    : r.touching ? '<b class="ok">touching</b>'
+      : `<b>${formatLen(r.gap, unit)} of clearance</b> on ${r.axisName}`;
+  return `<span class="cadMeasure">${name(meas.a)} → ${name(meas.b)}<br>${state}` +
+    `<br>${formatLen(r.centre, unit)} centre to centre</span>`;
 }
 
 function iconFor(shape) {
