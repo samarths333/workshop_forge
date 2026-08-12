@@ -1,0 +1,39 @@
+{
+  "name": "workshop-forge",
+  "productName": "Workshop Forge",
+  "version": "1.0.0",
+  "description": "A four-room maker workshop with an LLM-driven animated builder.",
+  "main": "main.js",
+  "author": "Santosh",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test": "node test/solver.test.mjs && node test/geometry.test.mjs && node test/wiring.test.mjs",
+    "make": "electron-builder --mac --dir",
+    "dmg": "electron-builder --mac"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "studio.forge.workshop",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "node_modules/three/build/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}

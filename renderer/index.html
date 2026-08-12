@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'sha256-Jn3X0cLyYfR1MPofeTrUr88TZ+d+4LAzkIh+DksTU3Y='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
+<title>Workshop Forge</title>
+<link rel="stylesheet" href="./style.css">
+<script type="importmap">
+{ "imports": { "three": "../node_modules/three/build/three.module.js" } }
+</script>
+</head>
+<body>
+
+<header id="bar">
+  <div class="lights"></div>
+  <div class="wordmark">WORKSHOP&nbsp;<b>FORGE</b></div>
+  <div class="tag">four rooms · one very literal robot</div>
+  <div class="spacer"></div>
+  <div id="refs" class="badge refs" hidden></div>
+  <div id="recall" class="badge recall" hidden></div>
+  <div id="engine" class="badge idle">no engine yet</div>
+  <button id="btnCad" class="ghost">Bench</button>
+  <button id="btnSettings" class="ghost">Engine</button>
+</header>
+
+<main>
+  <!-- ── command column ───────────────────────────────────────── -->
+  <aside id="left">
+    <section class="pane">
+      <h2>Tell Rivet what to build</h2>
+      <textarea id="req" rows="3" placeholder="a desk lamp with a folding arm"></textarea>
+      <div class="row">
+        <button id="btnBuild" class="primary">Build it</button>
+        <button id="btnStop" class="ghost" disabled>Stop</button>
+      </div>
+      <div class="chips" id="chips"></div>
+    </section>
+
+    <section class="pane grow">
+      <h2>Shop log</h2>
+      <div id="log"></div>
+    </section>
+
+    <section class="pane">
+      <h2>Camera</h2>
+      <div class="rooms" id="roomBtns"></div>
+      <label class="check"><input type="checkbox" id="followCam" checked> Follow Rivet</label>
+      <p class="fine">Drag to orbit · scroll to zoom · <b>1–4</b> jump rooms · <b>F</b> refollow</p>
+    </section>
+  </aside>
+
+  <!-- ── viewport ─────────────────────────────────────────────── -->
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="caption">
+      <span id="capAct">standing by</span><em id="capSay"></em>
+      <div id="capProg"><div id="capBar"></div></div>
+    </div>
+    <div id="roomTag">CARDBOARD</div>
+
+    <!-- ── the bench: CAD workspace over the same canvas ─────────── -->
+    <div id="cad" hidden>
+      <aside id="cadTree" class="cadPanel">
+        <div class="cadHead"><h3>Browser</h3></div>
+        <div class="cadTreeBody"></div>
+        <div id="cadStats" class="cadStats">no assembly</div>
+      </aside>
+
+      <div id="cadTools">
+        <div class="cadGroup">
+          <button data-view="front">Front</button>
+          <button data-view="top">Top</button>
+          <button data-view="right">Right</button>
+          <button data-view="iso">Iso</button>
+        </div>
+        <div class="cadGroup">
+          <button data-proj="persp" class="on">Persp</button>
+          <button data-proj="ortho">Ortho</button>
+        </div>
+        <div class="cadGroup">
+          <button data-mode="shaded" class="on">Shaded</button>
+          <button data-mode="edges">Edges</button>
+          <button data-mode="wire">Wire</button>
+          <button data-mode="xray">X-ray</button>
+        </div>
+        <div class="cadGroup slider">
+          <label for="cadExplode">Explode</label>
+          <input type="range" id="cadExplode" min="0" max="1" step="0.01" value="0">
+        </div>
+        <div class="cadGroup"><button data-cmd="fit">Fit</button></div>
+      </div>
+
+      <aside id="cadSide" class="cadPanel">
+        <div class="cadHead"><h3>Part</h3></div>
+        <div class="cadPropsBody"></div>
+        <div class="cadActions">
+          <button data-cmd="add">Add part</button>
+          <button data-cmd="teach" class="primary">Teach Rivet this</button>
+        </div>
+        <p class="fine" id="cadTeachNote">Corrections here become the recipe he starts from next time.</p>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ── job traveler ─────────────────────────────────────────── -->
+  <aside id="right">
+    <div class="traveler">
+      <div class="punch"></div>
+      <div class="thead">
+        <span class="stamp">JOB TRAVELER</span>
+        <h3 id="jobTitle">— no job on the floor —</h3>
+        <p id="jobSummary">Give Rivet a build request and the steps land here, stamped off as he finishes each one.</p>
+      </div>
+      <ol id="steps"></ol>
+      <div class="tfoot"><span id="jobCount">0 / 0 operations</span><span id="jobParts">0 parts</span></div>
+      <button id="btnExport" class="ghost" disabled>Export plan (JSON)</button>
+    </div>
+
+    <section class="learned">
+      <div class="lhead">
+        <h3>What Rivet has learned</h3>
+        <span id="skillCount" class="lcount">nothing yet</span>
+      </div>
+      <div id="skills"></div>
+      <div class="row lrow">
+        <button id="btnSkillExport" class="ghost">Export</button>
+        <button id="btnSkillImport" class="ghost">Import</button>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<!-- ── settings ───────────────────────────────────────────────── -->
+<div id="modal" hidden>
+  <div class="sheet">
+    <h2>Where Rivet's head comes from</h2>
+    <p class="fine">Primary is NVIDIA NIM over the network. If the key is missing, the model errors, or the request times out, it falls through to Ollama on this machine. If both are down, a built-in keyword planner keeps the shop running.</p>
+
+    <label>Routing
+      <select id="cfgProvider">
+        <option value="auto">Auto — NIM, then Ollama, then offline</option>
+        <option value="nim">NVIDIA NIM only</option>
+        <option value="ollama">Ollama only</option>
+        <option value="offline">Offline planner only</option>
+      </select>
+    </label>
+
+    <fieldset>
+      <legend>NVIDIA NIM</legend>
+      <label>API key <input id="cfgNimKey" type="password" placeholder="nvapi-..." spellcheck="false"></label>
+      <label>Model
+        <input id="cfgNimModel" list="nimModels" spellcheck="false">
+        <datalist id="nimModels"></datalist>
+      </label>
+      <p class="fine">Free key at <a href="#" data-url="https://build.nvidia.com">build.nvidia.com</a> — developer program, no card. Rate limited around 40 requests/minute, which is far more than this app needs.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Ollama (fallback)</legend>
+      <label>Model
+        <input id="cfgOllamaModel" list="ollamaModels" spellcheck="false">
+        <datalist id="ollamaModels"></datalist>
+      </label>
+      <p class="fine">Pull one first: <code>ollama pull llama3.2:3b</code>. Ollama gets the JSON schema enforced at the decoder, so a 3B model is enough here.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Reference designs</legend>
+      <p class="fine">Before planning, Rivet looks up how people actually make the thing you asked for. Real part names and proportions from published models, fed straight into the prompt — it is the cheapest way to stop him guessing.</p>
+      <label>Look things up on
+        <select id="cfgReferences">
+          <option value="auto">Thingiverse, then Printables if it comes up short</option>
+          <option value="thingiverse">Thingiverse only</option>
+          <option value="printables">Printables only</option>
+          <option value="off">Don't look anything up</option>
+        </select>
+      </label>
+      <label>Thingiverse app token
+        <input id="cfgThingiverse" type="password" placeholder="required for Thingiverse" spellcheck="false">
+      </label>
+      <p class="fine">Free at <a href="#" data-url="https://www.thingiverse.com/developers/apps">thingiverse.com/developers/apps</a> — create an app, copy the <b>App Token</b>. Everything on Thingiverse is openly licensed, which is why it goes first. Printables needs no token but its endpoint is undocumented, so it is treated as best-effort. Either way a failed lookup never blocks a build.</p>
+    </fieldset>
+
+    <div class="row">
+      <button id="btnProbe" class="ghost">Test both</button>
+      <div class="spacer"></div>
+      <button id="btnCloseModal" class="primary">Done</button>
+    </div>
+    <pre id="probeOut"></pre>
+  </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

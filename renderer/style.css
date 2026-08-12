@@ -1,0 +1,237 @@
+:root{
+  --void:#0c0a08;
+  --panel:#15120e;
+  --panel2:#1d1913;
+  --edge:#2e2619;
+  --kraft:#c69a63;
+  --kraft-dim:#8a6a44;
+  --hot:#ff8a3c;
+  --cool:#5ec8ff;
+  --paper:#efe9df;
+  --ink:#e8e0d2;
+  --dim:#95897a;
+  --ok:#7ec98a;
+  --bad:#e0655a;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --ui:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Inter,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--void);color:var(--ink);
+  font:13px/1.5 var(--ui);-webkit-font-smoothing:antialiased;user-select:none}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--kraft)}
+
+/* ── title bar ─────────────────────────────────────────────── */
+#bar{height:46px;display:flex;align-items:center;gap:14px;padding:0 14px 0 84px;
+  background:linear-gradient(#1a160f,#120f0a);border-bottom:1px solid var(--edge);
+  -webkit-app-region:drag}
+#bar button{-webkit-app-region:no-drag}
+.wordmark{font-size:12px;letter-spacing:.26em;font-weight:600;color:var(--kraft-dim)}
+.wordmark b{color:var(--kraft);font-weight:800}
+.tag{font-size:11px;color:#5f564a;letter-spacing:.03em}
+.spacer{flex:1}
+.badge{font:600 10.5px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;
+  padding:6px 9px;border-radius:3px;border:1px solid var(--edge);color:var(--dim)}
+.badge.nim{border-color:#20475e;background:#0e1c26;color:var(--cool)}
+.badge.ollama{border-color:#4a3416;background:#1e1409;color:var(--hot)}
+.badge.offline{border-color:#3a2f1d;background:#1a1610;color:var(--kraft)}
+.badge.busy{border-color:#4a3416;color:var(--hot)}
+
+/* ── layout ────────────────────────────────────────────────── */
+main{display:grid;grid-template-columns:302px 1fr 318px;height:calc(100% - 46px)}
+aside{background:var(--panel);display:flex;flex-direction:column;overflow:hidden}
+#left{border-right:1px solid var(--edge)}
+#right{border-left:1px solid var(--edge);padding:16px;overflow-y:auto}
+
+.pane{padding:14px;border-bottom:1px solid var(--edge);display:flex;flex-direction:column;gap:9px}
+.pane.grow{flex:1;min-height:0}
+.pane h2{font:600 9.5px/1 var(--ui);letter-spacing:.2em;text-transform:uppercase;color:#6b6053}
+
+textarea{background:#0a0806;border:1px solid var(--edge);border-radius:5px;padding:9px;
+  resize:none;font-size:13px;user-select:text}
+textarea:focus,input:focus,select:focus{outline:none;border-color:var(--kraft-dim)}
+.row{display:flex;gap:8px;align-items:center}
+button{border-radius:5px;padding:8px 13px;cursor:pointer;border:1px solid var(--edge);
+  background:var(--panel2);transition:.14s}
+button:hover:not(:disabled){border-color:var(--kraft-dim);color:#fff}
+button:disabled{opacity:.4;cursor:default}
+button.primary{background:var(--kraft);border-color:var(--kraft);color:#1c1206;font-weight:650}
+button.primary:hover:not(:disabled){background:#d9ac74;color:#1c1206}
+button.ghost{background:transparent}
+
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{font:11px var(--ui);padding:4px 8px;border:1px dashed var(--edge);border-radius:11px;
+  color:var(--dim);cursor:pointer}
+.chip:hover{border-color:var(--kraft-dim);border-style:solid;color:var(--kraft)}
+
+#log{flex:1;min-height:0;overflow-y:auto;font:11.5px/1.65 var(--mono);color:#9c9081;
+  display:flex;flex-direction:column;gap:3px;user-select:text}
+#log .l{padding-left:12px;text-indent:-12px}
+#log .l.err{color:var(--bad)}
+#log .l.ok{color:var(--ok)}
+#log .l.hi{color:var(--kraft)}
+#log .t{color:#544b40}
+
+.rooms{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.rooms button{padding:7px 4px;font:600 10px/1 var(--mono);letter-spacing:.08em}
+.rooms button.on{border-color:var(--kraft);color:var(--kraft)}
+.check{display:flex;gap:7px;align-items:center;font-size:12px;color:var(--dim);cursor:pointer}
+.fine{font-size:11px;line-height:1.55;color:#6b6053}
+.fine b{color:var(--kraft-dim)}
+code{font:11px var(--mono);background:#0a0806;padding:1px 5px;border-radius:3px;color:var(--kraft)}
+
+/* ── viewport ──────────────────────────────────────────────── */
+#stage{position:relative;background:#08070a;overflow:hidden}
+canvas{display:block;width:100%;height:100%;cursor:grab}
+canvas:active{cursor:grabbing}
+#caption{position:absolute;left:20px;bottom:20px;max-width:60%;pointer-events:none}
+#capAct{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;
+  background:rgba(198,154,99,.9);color:#1c1206;padding:5px 9px;border-radius:2px}
+#capSay{display:block;margin-top:8px;font:italic 17px/1.4 var(--ui);color:#f0e6d6;
+  text-shadow:0 2px 14px rgba(0,0,0,.9)}
+#capProg{margin-top:9px;width:220px;height:3px;border-radius:2px;background:rgba(255,255,255,.16)}
+#capBar{height:100%;width:0;border-radius:2px;background:var(--hot);transition:width .09s linear}
+#roomTag{position:absolute;right:20px;top:18px;font:700 11px/1 var(--mono);letter-spacing:.34em;
+  color:rgba(232,224,210,.34);pointer-events:none}
+
+/* ── job traveler ──────────────────────────────────────────── */
+.traveler{position:relative;background:var(--paper);color:#221c14;border-radius:2px;
+  padding:20px 18px 14px;box-shadow:0 14px 40px rgba(0,0,0,.6);
+  background-image:repeating-linear-gradient(0deg,transparent 0 27px,rgba(0,0,0,.045) 27px 28px)}
+.punch{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:34px;height:11px;
+  border-radius:6px;background:var(--void);box-shadow:inset 0 1px 2px rgba(0,0,0,.6)}
+.thead{border-bottom:2px solid #221c14;padding-bottom:10px;margin-bottom:12px}
+.stamp{display:inline-block;font:700 9px/1 var(--mono);letter-spacing:.24em;
+  border:1.5px solid #221c14;padding:4px 7px;transform:rotate(-1.6deg);opacity:.7}
+.thead h3{margin:11px 0 4px;font:650 17px/1.25 var(--ui)}
+.thead p{font-size:11.5px;line-height:1.5;color:#5d5347}
+#steps{list-style:none;display:flex;flex-direction:column}
+#steps li{display:grid;grid-template-columns:26px 1fr;gap:9px;padding:8px 0;
+  border-bottom:1px dotted rgba(34,28,20,.28);opacity:.42;transition:opacity .3s}
+#steps li.done,#steps li.now{opacity:1}
+#steps li .n{font:600 10px/1.7 var(--mono);color:#7a6f60}
+#steps li.done .n::after{content:"✓";color:#2f7d43;margin-left:-1px}
+#steps li.done .n{color:transparent;position:relative}
+#steps li.now{background:rgba(255,138,60,.13);margin:0 -8px;padding:8px}
+#steps li.now .n{color:var(--hot)}
+.sSay{font-size:12.5px;line-height:1.4}
+.sMeta{font:10px/1.5 var(--mono);letter-spacing:.05em;color:#7a6f60;text-transform:uppercase;margin-top:2px}
+.sPart{display:inline-block;margin-top:4px;font:10px var(--mono);background:#221c14;color:var(--paper);
+  padding:2px 6px;border-radius:2px}
+.sBar{margin-top:6px;height:3px;border-radius:2px;background:rgba(34,28,20,.16);overflow:hidden}
+.sBar span{display:block;height:100%;width:0;background:var(--hot);transition:width .09s linear}
+#btnExport{width:100%;margin-top:10px}
+.tfoot{display:flex;justify-content:space-between;margin-top:12px;padding-top:9px;
+  border-top:2px solid #221c14;font:10px var(--mono);letter-spacing:.08em;color:#5d5347;text-transform:uppercase}
+
+/* ── the bench: CAD workspace ──────────────────────────────── */
+/* The root is click-through so the shared canvas underneath still gets the
+   orbit and pick events in the gap between the two panels. */
+#cad{position:absolute;inset:0;pointer-events:none;z-index:5}
+#cad[hidden]{display:none}
+.cadPanel{position:absolute;top:0;bottom:0;width:238px;pointer-events:auto;
+  background:rgba(14,16,20,.94);backdrop-filter:blur(9px);
+  display:flex;flex-direction:column;overflow:hidden}
+#cadTree{left:0;border-right:1px solid #232a33}
+#cadSide{right:0;width:266px;border-left:1px solid #232a33}
+.cadHead{padding:11px 12px 8px;border-bottom:1px solid #232a33;display:flex;align-items:baseline;gap:8px}
+.cadHead h3{font:600 9.5px/1 var(--ui);letter-spacing:.2em;text-transform:uppercase;color:#7d8b9b}
+.cadTreeBody{flex:1;min-height:0;overflow-y:auto;padding:6px 0}
+.cadPropsBody{flex:1;min-height:0;overflow-y:auto;padding:11px 12px;display:flex;flex-direction:column;gap:9px}
+.cadStats{padding:9px 12px;border-top:1px solid #232a33;font:10px/1.7 var(--mono);
+  color:#68768a;display:flex;flex-direction:column}
+.cadStats b{color:#cbd6e2;font-size:11px;letter-spacing:.04em}
+.cadStats .warn{color:var(--hot)}
+
+.cadRow{display:flex;align-items:center;gap:6px;padding:4px 10px 4px 8px;cursor:pointer;
+  font-size:12px;color:#b9c4d2;border-left:2px solid transparent}
+.cadRow:hover{background:rgba(255,255,255,.045)}
+.cadRow.sel{background:rgba(95,160,230,.16);border-left-color:#5ea0e6;color:#eaf1f8}
+.cadRow.hid{opacity:.4}
+.cadEye{padding:0;width:14px;border:0;background:none;color:#5e6b7d;font-size:9px;line-height:1;cursor:pointer}
+.cadEye:hover{color:var(--kraft);border-color:transparent}
+.cadIcon{width:13px;text-align:center;color:#7f8fa3;font-size:11px}
+.cadName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cadMul{font:9.5px var(--mono);color:#101318;background:var(--kraft);padding:1px 4px;border-radius:2px}
+.cadFace{font:9px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:#5e6b7d}
+.cadFace.root{color:#4a5768}
+
+#cadTools{position:absolute;top:12px;left:50%;transform:translateX(-50%);pointer-events:auto;
+  display:flex;gap:7px;align-items:center;background:rgba(14,16,20,.92);backdrop-filter:blur(9px);
+  border:1px solid #232a33;border-radius:7px;padding:5px}
+.cadGroup{display:flex;gap:2px;padding:0 3px;border-right:1px solid #232a33}
+.cadGroup:last-child{border-right:0}
+#cadTools button{padding:5px 9px;font:600 10px/1 var(--mono);letter-spacing:.06em;
+  text-transform:uppercase;background:transparent;border:1px solid transparent;color:#8493a5}
+#cadTools button:hover{color:#eaf1f8;border-color:#2f3945}
+#cadTools button.on{background:#1e2732;border-color:#39485a;color:#8fc4ff}
+.cadGroup.slider{gap:8px;align-items:center;padding-left:9px}
+.cadGroup.slider label{font:600 10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:#8493a5}
+#cadExplode{width:96px;accent-color:var(--kraft);background:transparent}
+
+.cadF{display:flex;flex-direction:column;gap:3px;font:9.5px/1 var(--mono);
+  letter-spacing:.06em;text-transform:uppercase;color:#68768a;flex:1;min-width:0}
+.cadF input,.cadF select{background:#080a0d;border:1px solid #262f3a;border-radius:4px;
+  padding:6px 7px;font:12px var(--ui);color:#dbe4ee;min-width:0;width:100%}
+.cadF input:focus,.cadF select:focus{outline:none;border-color:#4a7fb5}
+.cadF input:disabled,.cadF select:disabled{opacity:.35}
+.cadPair{display:flex;gap:7px}
+.cadTrip{display:flex;gap:5px}
+.cadPropsBody h4{font:600 9px/1 var(--ui);letter-spacing:.2em;text-transform:uppercase;
+  color:#5e6b7d;margin-top:5px;padding-top:9px;border-top:1px solid #1e252e}
+.cadPropsBody .empty{margin:0}
+.cadDelete{margin-top:6px;font-size:11.5px;color:#a56058;border-color:#3a2723;background:transparent}
+.cadDelete:hover{color:#e0655a;border-color:#5c3630}
+.cadActions{display:flex;gap:7px;padding:11px 12px 6px;border-top:1px solid #232a33}
+.cadActions button{flex:1;font-size:11.5px;padding:7px 6px}
+#cadTeachNote{padding:0 12px 12px;margin:0}
+body.cadOn #caption,body.cadOn #roomTag{display:none}
+#btnCad.on{border-color:#4a7fb5;color:#8fc4ff}
+
+/* ── the skill library ─────────────────────────────────────── */
+.badge.refs{border-color:#2b4a5e;background:#0e1922;color:#7fc4e6;cursor:pointer;
+  text-transform:none;letter-spacing:.02em}
+.badge.refs:hover{border-color:#4a7fb5;color:#bfe4f7}
+.badge.recall{border-color:#3d5a2a;background:#131c0e;color:#a8d17e;
+  max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:none;letter-spacing:.02em}
+.learned{margin-top:16px;background:var(--panel2);border:1px solid var(--edge);
+  border-radius:5px;padding:13px;display:flex;flex-direction:column;gap:10px}
+.lhead{display:flex;align-items:baseline;gap:8px}
+.lhead h3{font:600 9.5px/1 var(--ui);letter-spacing:.2em;text-transform:uppercase;color:#6b6053}
+.lcount{margin-left:auto;font:10px var(--mono);color:#5f564a}
+.lrow button{flex:1;font-size:11.5px;padding:6px}
+#skills{display:flex;flex-direction:column;gap:9px;max-height:320px;overflow-y:auto}
+#skills .empty{margin:0}
+.skill{border:1px solid var(--edge);border-radius:4px;padding:9px 10px;background:#100d09}
+.sk-head{display:flex;align-items:center;gap:7px}
+.sk-name{font-size:12.5px;font-weight:600;color:var(--ink);flex:1;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sk-taught{font-size:10px;opacity:.85}
+.sk-class{font:9.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--kraft);border:1px solid #3a2f1d;border-radius:2px;padding:2px 5px}
+.sk-forget{padding:1px 6px;font-size:11px;line-height:1.4;border-color:transparent;
+  background:transparent;color:#5f564a}
+.sk-forget:hover{color:var(--bad);border-color:transparent}
+.sk-bar{height:3px;border-radius:2px;background:#241d14;margin:7px 0 5px;overflow:hidden}
+.sk-bar span{display:block;height:100%;background:linear-gradient(90deg,var(--kraft-dim),var(--kraft))}
+.sk-meta{font:10px var(--mono);color:#6b6053;letter-spacing:.03em}
+.sk-lessons{margin:7px 0 0;padding-left:13px;font-size:11px;line-height:1.5;color:#9c9081}
+.sk-lessons li{margin-bottom:3px}
+
+/* ── settings ──────────────────────────────────────────────── */
+#modal{position:fixed;inset:0;background:rgba(4,3,2,.76);display:grid;place-items:center;z-index:40}
+#modal[hidden]{display:none}
+.sheet{width:520px;max-height:86vh;overflow-y:auto;background:var(--panel);
+  border:1px solid var(--edge);border-radius:9px;padding:22px;display:flex;flex-direction:column;gap:13px}
+.sheet h2{font-size:17px;font-weight:650}
+.sheet label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:var(--dim)}
+.sheet input,.sheet select{background:#0a0806;border:1px solid var(--edge);border-radius:5px;
+  padding:8px;font-size:13px;user-select:text}
+fieldset{border:1px solid var(--edge);border-radius:7px;padding:13px;display:flex;
+  flex-direction:column;gap:9px}
+legend{font:600 9.5px/1 var(--ui);letter-spacing:.18em;text-transform:uppercase;color:var(--kraft-dim);padding:0 6px}
+#probeOut{font:11px/1.6 var(--mono);color:var(--dim);white-space:pre-wrap;max-height:150px;
+  overflow-y:auto;user-select:text}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:#2e2619;border-radius:5px}
+::-webkit-scrollbar-track{background:transparent}

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill -f \"electron .\")",
+      "Bash(npm start *)",
+      "Bash(python3 -)"
+    ]
+  }
+}
