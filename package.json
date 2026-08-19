@@ -2,16 +2,17 @@
   "name": "workshop-forge",
   "productName": "Workshop Forge",
   "version": "1.0.0",
-  "description": "A four-room maker workshop with an LLM-driven animated builder.",
+  "description": "One shop floor, five specialist robots and a manager who splits the work between them.",
   "main": "main.js",
   "author": "Santosh",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "test": "node test/solver.test.mjs && node test/geometry.test.mjs && node test/learning.test.mjs && node test/bench.test.mjs && node test/wiring.test.mjs",
+    "test": "node test/solver.test.mjs && node test/geometry.test.mjs && node test/shapelib.test.mjs && node test/catalog.test.mjs && node test/learning.test.mjs && node test/bench.test.mjs && node test/engineer.test.mjs && node test/circuit.test.mjs && node test/engine.test.mjs && node test/reading.test.mjs && node test/crew.test.mjs && node test/providers.test.mjs && node test/apprentice.test.mjs && node test/palette.test.mjs && node test/cadscript.test.mjs && node test/cadbuild.test.mjs && node test/wiring.test.mjs",
     "make": "electron-builder --mac --dir",
-    "dmg": "electron-builder --mac"
+    "dmg": "electron-builder --mac",
+    "forge": "electron . --forge"
   },
   "dependencies": {
     "three": "^0.169.0"

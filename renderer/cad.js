@@ -18,9 +18,11 @@
    ===================================================================== */
 
 import * as THREE from 'three';
-import { partGeometry, partMaterial } from './shapes.js';
+import { partGeometry, partMaterial, previewGeometry } from './shapes.js';
 import { SHAPES, MATERIALS, FACES, ARRAY_MODES } from './assembly.js';
+import { allShapes, shapeDef, customShapes, newShapeFrom, validateShapeDef, SHAPE_KINDS } from './shapelib.js';
 import { cubeFaceTex } from './textures.js';
+import { describeEngine } from './engine.js';
 import {
   assemblyMetrics, partMetrics, measureBetween,
   formatLen, formatMass, formatVolume, toUnit, parseLen, UNITS
@@ -61,6 +63,7 @@ export class CadView {
     this.explodeAmount = 0;
     this.ortho = false;
     this.onEdit = null;                   // (index, patch) → app re-solves
+    this.onEngineEdit = null;             // (set) → app re-sizes the whole engine
     this.onCommand = null;                // ('add' | 'delete' | 'teach' | 'rebuild')
 
     /* Nobody works in metres. The shop does, the solver does, and every
@@ -71,6 +74,11 @@ export class CadView {
     this.measure = { on: false, a: null, b: null, result: null };
     this.isolated = false;
     this.section = { on: false, axis: 0, offset: 0 };
+    /* The shape being drawn, when somebody is drawing one. Declared here
+       rather than sprung into existence by openShapes, so every field this
+       view owns is in one place. */
+    this.shapeEd = null;
+    this.previewMesh = null;
     this.clipPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
 
     /* ---- scene ---- */
@@ -571,9 +579,15 @@ export class CadView {
     const pm = inst ? partMetrics(inst) : null;
 
     el.innerHTML = `
+      ${this.engineFields()}
       <label class="cadF"><span>Name</span><input data-f="name" value="${esc(p.name || '')}"></label>
       <div class="cadPair">
-        <label class="cadF"><span>Shape</span><select data-f="shape">${opt(SHAPES, p.shape)}</select></label>
+        <label class="cadF"><span>Shape</span>
+          <span class="cadShapeRow">
+            <select data-f="shape">${shapeOptions(p.shape)}</select>
+            <button class="cadMini" data-cmd="shapes" title="Make a shape of your own">✎</button>
+          </span>
+        </label>
         <label class="cadF"><span>Material</span><select data-f="material">${opt(MATERIALS, p.material)}</select></label>
       </div>
       <div class="cadTrip">
@@ -615,6 +629,207 @@ export class CadView {
       <button class="cadDelete" data-cmd="delete">Scrap this part</button>`;
   }
 
+  /* The governing dimensions, when there is an engine on the bench. These
+     are the ONLY numbers worth editing on an engine — change the bore and
+     every part re-sizes off it, which is what makes this different from
+     the size fields below, where a number is just that part's number.
+     Everything is in the units the engine is quoted in (mm, degrees, rpm),
+     deliberately NOT in the panel's unit: nobody specifies a bore in
+     metres, and converting it would make the field unreadable. */
+  engineFields() {
+    const e = this.plan?.engine;
+    if (!e) return '';
+    const N = (f, label, v, step = 1, min = 0) =>
+      `<label class="cadF"><span>${label}</span><input type="number" step="${step}" min="${min}" data-e="${f}" value="${Math.round(Number(v) * 100) / 100}"></label>`;
+
+    let rows;
+    if (e.kind === 'ice') {
+      rows = `
+      <div class="cadTrip">
+        ${N('bore', 'Bore mm', e.bore)}${N('stroke', 'Stroke mm', e.stroke)}${N('rod', 'Rod mm', e.rod)}
+      </div>
+      <div class="cadTrip">
+        ${N('chamber', 'Chamber cc', e.chamber, 0.5)}${N('cylinders', 'Cylinders', e.cylinders)}${N('redline', 'Redline rpm', e.redline, 100)}
+      </div>`;
+    } else if (e.kind === 'turbofan') {
+      rows = `
+      <div class="cadTrip">
+        ${N('fanDiameter', 'Fan mm', e.fanDiameter, 10)}${N('bypassRatio', 'Bypass', e.bypassRatio, 0.5)}${N('overallPressureRatio', 'OPR', e.overallPressureRatio, 1)}
+      </div>
+      <div class="cadTrip">
+        ${N('massFlow', 'Core kg/s', e.massFlow, 0.5)}${N('fanTipMach', 'Tip Mach', e.fanTipMach, 0.05)}${N('lpcPR', 'Booster PR', e.lpcPR, 0.1)}
+      </div>`;
+    } else {
+      rows = `
+      <div class="cadTrip">
+        ${N('statorOD', 'Stator OD mm', e.statorOD)}${N('statorID', 'Bore mm', e.statorID)}${N('stackLength', 'Stack mm', e.stackLength)}
+      </div>
+      <div class="cadTrip">
+        ${N('slots', 'Slots', e.slots)}${N('poles', 'Poles', e.poles)}${N('kv', 'Kv', e.kv, 10)}
+      </div>`;
+    }
+    return `<h4>The engine — every part is sized from these</h4>${rows}<div class="cadEngineNote">${esc(describeEngine(this.plan).split('\n')[0])}</div>`;
+  }
+
+  /* ---------------------------------------------------------------- *
+   * the shape editor                                                  *
+   * ---------------------------------------------------------------- */
+  /* Nine shapes used to be all there was, and a tenth was a code change.
+     A shape is a profile now, so this is a table of numbers with a picture
+     next to it — which is the honest UI for the thing it edits.
+
+     Two rules it does not bend. Editing always starts from a shape that
+     already exists, because nobody authors a profile from an empty list;
+     and the preview is drawn by the SAME partGeometry the shop uses, not
+     by a second drawing path, so what is on screen is what gets built. */
+  openShapes(startFrom) {
+    this.shapeEd = this.shapeEd || {};
+    const from = startFrom || this.parts[this.selected]?.shape || 'cylinder';
+    const draft = newShapeFrom(from, uniqueShapeId(from), `My ${from}`);
+    this.shapeEd.draft = draft;
+    this.shapeEd.open = !!draft;
+    this.shapeEd.error = '';
+    this.renderShapes();
+  }
+
+  closeShapes() {
+    if (this.shapeEd) this.shapeEd.open = false;
+    this.renderShapes();
+  }
+
+  refreshShapes() {
+    this.renderProps(true);
+    this.renderShapes();
+  }
+
+  /* The points, as a text area. A grid of number inputs was the obvious
+     design and it is wrong: a profile is 6 to 30 pairs, the useful edit is
+     "paste a different profile" or "nudge four of them", and both are
+     miserable through thirty spinners. One pair per line, and anything
+     that will not parse leaves the last good preview up. */
+  renderShapes() {
+    const el = this.dom.shapes;
+    if (!el) return;
+    const ed = this.shapeEd;
+    if (!ed?.open || !ed.draft) { el.style.display = 'none'; el.innerHTML = ''; this.updateShapePreview(); return; }
+    el.style.display = '';
+    this.updateShapePreview();
+
+    const d = ed.draft;
+    const pts = d.kind === 'revolve' ? d.profile : d.outline;
+    const mine = customShapes();
+    const text = ed.text !== undefined ? ed.text : pts.map(pr => `${round3(pr[0])} ${round3(pr[1])}`).join('\n');
+
+    el.innerHTML = `
+      <div class="cadShapeHead">
+        <b>Make a shape</b>
+        <button class="cadMini" data-sh="close" title="Close">✕</button>
+      </div>
+      <div class="cadPair">
+        <label class="cadF"><span>Name</span><input data-sh="id" value="${esc(d.id)}"></label>
+        <label class="cadF"><span>Swept</span><select data-sh="kind">
+          ${SHAPE_KINDS.map(k => `<option value="${k}"${k === d.kind ? ' selected' : ''}>${k === 'revolve' ? 'turned on a lathe' : 'cut from sheet'}</option>`).join('')}
+        </select></label>
+      </div>
+      <label class="cadF"><span>Start from</span><select data-sh="from">
+        ${allShapes().map(o => `<option value="${o.id}">${esc(o.label)}</option>`).join('')}
+      </select></label>
+      <div class="cadShapeHint">${d.kind === 'revolve'
+        ? 'One point per line: <b>radius height</b>, both 0 to 1, bottom to top. It is spun about the upright.'
+        : 'One point per line: <b>across up</b>, both 0 to 1, going round the outline. It is pushed out to the depth you set.'}</div>
+      <textarea class="cadShapePts" data-sh="pts" spellcheck="false" rows="9">${esc(text)}</textarea>
+      <div class="cadShapeErr">${esc(ed.error || '')}</div>
+      <div class="cadShapeBtns">
+        <button data-sh="save">Save it</button>
+        <button data-sh="cancel">Cancel</button>
+      </div>
+      ${mine.length ? `<h4>Yours</h4><div class="cadShapeMine">${mine.map(m => `
+        <span class="cadChip">${esc(m.id)}
+          <button class="cadMini" data-sh="edit" data-id="${esc(m.id)}" title="Start a new one from this">✎</button>
+          <button class="cadMini" data-sh="drop" data-id="${esc(m.id)}" title="Delete">✕</button>
+        </span>`).join('')}</div>` : ''}`;
+  }
+
+  /* THE PREVIEW, drawn by the same partGeometry the shop builds with — not
+     by a second drawing path. A preview with its own renderer is a preview
+     that can be right about a shape the floor then gets wrong, which is
+     the one thing it must never be. It stands beside the assembly at a
+     size that reads next to it. */
+  updateShapePreview() {
+    const ed = this.shapeEd;
+    const want = ed?.open && ed.draft ? ed.draft : null;
+
+    if (!want) {
+      if (this.previewMesh) {
+        this.group.remove(this.previewMesh);
+        this.previewMesh.geometry.dispose();
+        this.previewMesh.material.dispose();
+        this.previewMesh = null;
+      }
+      return;
+    }
+
+    /* The draft is not in the registry until it is saved, so it is drawn
+       from its definition directly — same function, same normalisation. */
+    const size = [0.5, 0.5, 0.5];
+    const geo = definedPreviewGeometry(want, size);
+    if (!geo) return;
+
+    if (!this.previewMesh) {
+      this.previewMesh = new THREE.Mesh(geo, partMaterial('alloy', null, this.tex));
+      this.previewMesh.userData.preview = true;
+      this.previewMesh.raycast = () => {};
+      this.group.add(this.previewMesh);
+    } else {
+      this.previewMesh.geometry.dispose();
+      this.previewMesh.geometry = geo;
+    }
+
+    /* Beside whatever is on the bench, never through it. */
+    const span = this.solved ? Math.max(0.4, this.solved.size?.[0] || 0.8) : 0.8;
+    this.previewMesh.position.set(span / 2 + 0.55, 0.3, 0);
+  }
+
+  /* Parse what is in the box back into a draft. Called on every keystroke,
+     so it must never throw and must never lose what is being typed —
+     a half-finished line is a line that does not parse yet, not an error. */
+  editShapeText(text) {
+    const ed = this.shapeEd;
+    if (!ed?.draft) return;
+    ed.text = text;
+    const pts = text.split(/\n+/).map(line => {
+      const m = line.trim().split(/[\s,]+/).map(Number);
+      return m.length >= 2 && m.every(Number.isFinite) ? [m[0], m[1]] : null;
+    }).filter(Boolean);
+    if (pts.length < 3) { ed.error = 'three points or more'; return; }
+    const next = { ...ed.draft };
+    if (next.kind === 'revolve') next.profile = pts; else next.outline = pts;
+    const clean = validateShapeDef(next);
+    if (!clean) { ed.error = 'that profile sweeps nothing — give it some height and some width'; return; }
+    ed.error = '';
+    ed.draft = clean;
+    this.updateShapePreview();
+  }
+
+  setShapeField(field, value) {
+    const ed = this.shapeEd;
+    if (!ed?.draft) return;
+    if (field === 'id') { ed.draft.id = String(value).toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 32); return; }
+    if (field === 'kind' && SHAPE_KINDS.includes(value) && value !== ed.draft.kind) {
+      /* Switching how it is swept keeps the points — a profile read as an
+         outline is a different shape but a sensible starting one, and
+         throwing the numbers away on a mis-click is not. */
+      const pts = ed.draft.kind === 'revolve' ? ed.draft.profile : ed.draft.outline;
+      ed.draft = validateShapeDef({ ...ed.draft, kind: value, profile: pts, outline: pts }) || ed.draft;
+      ed.text = undefined;
+      this.renderShapes();
+    }
+    if (field === 'from') {
+      const next = newShapeFrom(value, ed.draft.id, ed.draft.label);
+      if (next) { ed.draft = next; ed.text = undefined; ed.error = ''; this.renderShapes(); }
+    }
+  }
+
   /* The numbers a person checks before they commit to cutting anything:
      how big, how heavy, what it is made of, and whether it will stand up. */
   renderStats() {
@@ -629,8 +844,10 @@ export class CadView {
 
     const meas = this.measure.on ? measureLine(this.measure, this.parts, u) : '';
 
+    const eng = this.plan?.engine ? describeEngine(this.plan).split('\n').map(l => `<span>${esc(l)}</span>`).join('') : '';
+
     el.innerHTML =
-      `<b>${dims} ${u}</b>` +
+      `<b>${dims} ${u}</b>` + eng +
       `<span>${m.parts} parts from ${this.parts.length} operations · ${this.solved.joints.length} joints</span>` +
       `<span class="cadNum">${formatMass(m.mass)} · ${formatVolume(m.volume)} of material</span>` +
       (mats ? `<span>${esc(mats)}</span>` : '') +
@@ -641,6 +858,53 @@ export class CadView {
       (this.solved.fit < 0.999 ? `<span class="warn">scaled to ${Math.round(this.solved.fit * 100)}% to fit the pedestal</span>` : '') +
       meas;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * shape picker helpers                                                *
+ * ------------------------------------------------------------------ */
+/* Thirty-odd shapes in one flat <select> is a list nobody reads. Grouped
+   by how the thing is made, with anything the person made themselves in a
+   group of its own at the top — theirs is the one they are looking for. */
+function shapeOptions(current) {
+  const groups = new Map();
+  for (const s of allShapes()) {
+    const g = s.custom ? 'yours' : s.group;
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(s);
+  }
+  const order = ['yours', 'primitive', 'turned', 'section', 'plate'];
+  const keys = [...groups.keys()].sort((a, b) => {
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  return keys.map(g => {
+    const rows = groups.get(g)
+      .map(o => `<option value="${o.id}"${o.id === current ? ' selected' : ''}>${esc(o.label)}</option>`)
+      .join('');
+    return `<optgroup label="${esc(g)}">${rows}</optgroup>`;
+  }).join('');
+}
+
+/* A new shape needs a name nothing else has, and "my_cone_2" beats making
+   somebody think of one before they have drawn anything. */
+function uniqueShapeId(from) {
+  const base = `my_${String(from || 'shape').toLowerCase().replace(/[^a-z0-9]/g, '')}`.slice(0, 24);
+  const taken = new Set(allShapes().map(s => s.id));
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 99; n++) if (!taken.has(`${base}_${n}`)) return `${base}_${n}`;
+  return `${base}_${Date.now() % 1000}`;
+}
+
+const round3 = v => Math.round(Number(v) * 1000) / 1000;
+
+/* A draft is not in the registry until it is saved, and partGeometry looks
+   shapes UP by id — so the preview goes through the one entry point that
+   takes a definition rather than a name. Still the shop's geometry code;
+   only the lookup is skipped. */
+function definedPreviewGeometry(def, size) {
+  try { return previewGeometry(def, size); }
+  catch { return null; }
 }
 
 /* which named view a clicked cube face corresponds to. BoxGeometry orders

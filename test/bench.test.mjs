@@ -14,7 +14,7 @@ import {
 } from '../renderer/metrics.js';
 import {
   classifyRequest, sourcesFor, searchTerms, structureFrom,
-  technicalBlock, mergeRefs, enrichRefs, domainKnowledge, SOURCES
+  technicalBlock, mergeRefs, enrichRefs, rankRefs, relevanceOf, domainKnowledge, SOURCES
 } from '../renderer/library.js';
 import { solveAssembly } from '../renderer/assembly.js';
 import { engineeringBlock, buildMessages } from '../renderer/agent.js';
@@ -224,13 +224,51 @@ check('an engine is not sent to a print site', () => {
   }
 });
 
+/* Classification used to be first-match-wins over an ordered table, so the
+   ORDER was doing the deciding: "a car with an engine" met the propulsion
+   vocabulary on `engine` before the vehicle vocabulary was ever tried, and
+   the shop went looking for jet engines. It is weighed now — how much of a
+   vocabulary is present, how specific each hit is, and how early it comes,
+   because the thing being asked for is named before the things on it. */
+check('the domain is what the request is about, not what it mentions', () => {
+  const of = q => classifyRequest(q).domain;
+
+  assert(of('a car with an engine') === 'vehicle', `a car with an engine went to ${of('a car with an engine')}`);
+  assert(of('a truck chassis') === 'vehicle', 'a truck is not a vehicle');
+  assert(of('an engine for a car') === 'propulsion', `an engine for a car went to ${of('an engine for a car')}`);
+
+  /* the rule that was there before, kept and now stated rather than
+     implied by list order: the specific reading wins */
+  assert(of('a circuit that runs a small motor') === 'electronics', 'a circuit became a powerplant');
+  assert(of('a torch with a switch') === 'electronics', 'a torch stopped being electronics');
+
+  /* and the ones that were already right stay right */
+  assert(of('a turbofan engine') === 'propulsion', 'engines stopped working');
+  assert(of('a glider wing with ailerons') === 'aerospace', 'a wing stopped being aerospace');
+  assert(of('a wooden stool') === 'making', 'a stool became engineering');
+  assert(of('') === 'making', 'an empty request classified as something');
+});
+
+check('the words people actually use are in the vocabulary', () => {
+  const of = q => classifyRequest(q).domain;
+  /* every one of these used to fall through to `making`, which sent them
+     to a print site and gave the planner no vocabulary at all */
+  assert(of('a quadcopter frame') === 'aerospace', `a quadcopter went to ${of('a quadcopter frame')}`);
+  assert(of('a drone with four arms') === 'aerospace', 'a drone is not an airframe');
+  assert(of('a car') === 'vehicle', 'a car is not a vehicle');
+  assert(of('a van body') === 'vehicle', 'a van is not a vehicle');
+});
+
 check('a wing goes to the aerospace sources, a phone stand does not', () => {
   const wing = classifyRequest('a glider wing with ailerons');
   assert(wing.domain === 'aerospace', `wing classified as ${wing.domain}`);
 
   const stand = classifyRequest('a phone stand with a cable slot');
   assert(!stand.engineering, 'a phone stand was sent to an encyclopedia');
-  assert(sourcesFor(stand.domain).join() === 'thingiverse,printables', 'the maker route changed');
+  // the print sites still lead for a maker request — that is where the
+  // published models genuinely are — and the open web backs them up
+  assert(sourcesFor(stand.domain).slice(0, 2).join() === 'thingiverse,printables', 'the maker route lost its priority');
+  assert(sourcesFor(stand.domain).includes('web'), 'a maker request cannot reach the open web');
 });
 
 check('the specific reading wins over the general one', () => {
@@ -239,6 +277,98 @@ check('the specific reading wins over the general one', () => {
   assert(classifyRequest('a rocket engine').domain === 'propulsion', 'rocket engine misrouted');
   assert(classifyRequest('landing gear for a light aircraft').domain === 'aerospace', 'landing gear misrouted');
   assert(classifyRequest('a differential for a rear axle').domain === 'mechanism', 'differential misrouted');
+});
+
+/* ================================================================== */
+/* what came back had better be about what was asked for               */
+/* ================================================================== */
+/* The real one: Thingiverse ignores an unknown query parameter and hands
+   back the most popular things on the site — #3DBenchy, a whistle, an
+   octopus — with a 200 and no hint that the search never happened. Both a
+   desk lamp and a coffee grinder stand came back as a tugboat. */
+const CHARTS = [
+  { source: 'thingiverse', title: '#3DBenchy - The jolly 3D printing torture-test', tags: ['boat', 'benchy', 'calibration'], likes: 91079, summary: 'A tugboat for calibrating a printer' },
+  { source: 'thingiverse', title: 'V29', tags: ['whistle', 'steam'], likes: 81595, summary: '' },
+  { source: 'thingiverse', title: 'Cute Mini Octopus', tags: ['octopus', 'articulated'], likes: 76003, summary: '' }
+];
+
+check('the site charts do not get sold to the planner as a desk lamp', () => {
+  const terms = searchTerms('a desk lamp with a folding arm', 'making');
+  assert(rankRefs(CHARTS, terms).length === 0, 'a tugboat survived a search for a desk lamp');
+  assert(rankRefs(CHARTS, searchTerms('a coffee grinder stand', 'making')).length === 0,
+    'a tugboat survived a search for a coffee grinder stand');
+});
+
+check('a real result still gets through, best match first', () => {
+  const ask = 'a desk lamp with a folding arm';
+  const terms = searchTerms(ask, 'making');
+  const hits = rankRefs([
+    ...CHARTS,
+    { source: 'thingiverse', title: 'Snap Together Mini Lamp', tags: ['lamp', 'toy'], likes: 18489 },
+    { source: 'thingiverse', title: 'Folding desk lamp with articulating arm', tags: ['lamp', 'desk'], likes: 900 }
+  ], terms, ask);
+  assert(hits.length === 2, `${hits.length} kept — the real lamps should survive and nothing else should`);
+  assert(/Folding desk lamp/.test(hits[0].title),
+    `sorted wrong: the one matching three words should lead, got "${hits[0].title}"`);
+});
+
+/* The bug this was reported as: "it pulls a model rocket for a car with an
+   engine". Ranking kept anything sharing ONE token with the search terms,
+   so a rocket listing that happened to say `engine` went into the planning
+   prompt AND the critique prompt as an example of the thing being built.
+   One shared word is a coincidence; what matters is WHICH word. */
+check('a reference has to be about the thing, not merely mention a word from it', () => {
+  const ask = 'a car with an engine';
+  const terms = searchTerms(ask, 'vehicle');
+  const kept = rankRefs([
+    { source: 'thingiverse', title: 'Model Rocket Engine Holder', tags: ['rocket', 'engine'], likes: 9000 },
+    { source: 'thingiverse', title: 'Phone stand remix v2', tags: ['stand'], likes: 50000 },
+    { source: 'thingiverse', title: 'RC Car Chassis', tags: ['car', 'rc'], likes: 100 },
+    { source: 'thingiverse', title: 'Car engine block display model', tags: ['car', 'engine'], likes: 20 }
+  ], terms, ask);
+
+  const titles = kept.map(k => k.title).join(' | ');
+  assert(!/Rocket/.test(titles), `the model rocket came back for a car: ${titles}`);
+  assert(!/Phone stand/.test(titles), `a popular unrelated thing came back: ${titles}`);
+  assert(kept.length === 2, `${kept.length} kept: ${titles}`);
+  assert(/Car engine block/.test(kept[0].title), `the best match did not lead: ${titles}`);
+});
+
+/* Likes are the tie-break, never the argument. The most printed thing on
+   the internet is not evidence about the object somebody just asked for. */
+check('popularity cannot rescue an irrelevant reference', () => {
+  const kept = rankRefs([
+    { source: 'thingiverse', title: 'Benchy', tags: ['boat', 'test'], likes: 999999 }
+  ], searchTerms('a bookshelf', 'making'), 'a bookshelf');
+  assert(!kept.length, 'the most-liked thing on the site came back for a bookshelf');
+});
+
+check('relevance is judged on tags and prose too, not just the title', () => {
+  const hit = { source: 'thingiverse', title: 'V29', tags: ['whistle'], summary: 'a coffee grinder holder' };
+  assert(rankRefs([hit], searchTerms('a coffee grinder stand', 'making')).length === 1,
+    'a match in the description was ignored');
+});
+
+check('an engineering lookup is filtered the same way', () => {
+  const terms = searchTerms('a turbofan engine', 'propulsion');
+  const kept = rankRefs([
+    { source: 'wikipedia', title: 'Turbofan', summary: 'A turbofan is a type of airbreathing jet engine.' },
+    { source: 'commons', title: 'Cute Mini Octopus' }
+  ], terms);
+  assert(kept.length === 1 && kept[0].title === 'Turbofan', `kept ${kept.map(k => k.title)}`);
+});
+
+check('plurals and singulars are the same word', () => {
+  const kept = rankRefs([{ source: 'thingiverse', title: 'Gear set for a lamp', tags: [] }], ['gears'], 'gears');
+  assert(kept.length === 1, 'a plural in the request did not match a singular in the title');
+});
+
+check('a search ladder gets shorter, and the shortest rung is a real word', () => {
+  const t = searchTerms('a desk lamp with a folding arm', 'making');
+  assert(t.length >= 3, `only ${t.length} rungs: ${JSON.stringify(t)}`);
+  assert(t[0].split(' ').length > t.at(-1).split(' ').length, `the ladder does not narrow: ${JSON.stringify(t)}`);
+  assert(t.includes('desk lamp'), `the useful two-word query is missing: ${JSON.stringify(t)}`);
+  assert(t.every(x => x.length > 2), `a rung is too short to search on: ${JSON.stringify(t)}`);
 });
 
 check('an encyclopedia is asked for the noun, not the sentence', () => {

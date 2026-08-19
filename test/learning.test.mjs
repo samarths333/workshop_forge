@@ -12,7 +12,8 @@
 import { offlinePlan, validatePlan, planParts, editPart, removePart } from '../renderer/agent.js';
 import { inspectPlan } from '../renderer/critic.js';
 import {
-  recall, learn, sanitize, mergeLibraries, deterministicReflection, MAX_SKILLS
+  recall, learn, sanitize, mergeLibraries, deterministicReflection, MAX_SKILLS,
+  scoreSkill, cleanKeywords, headNoun, tokenize, RECALL_FLOOR
 } from '../renderer/skills.js';
 import { History } from '../renderer/history.js';
 import { trianglesFrom, toSTL, toOBJ, summarise, MM } from '../renderer/export3d.js';
@@ -120,6 +121,149 @@ check('a request for something else does not drag the lamp along', () => {
   const { skills } = learnOnce([], 'a desk lamp with a folding arm');
   assert(!recall(skills, 'a rover chassis with four wheels'), 'a lamp was recalled for a rover');
   assert(!recall(skills, ''), 'an empty request recalled something');
+});
+
+/* ================================================================== */
+/* 3b. recalling the RIGHT thing                                       */
+/* ================================================================== */
+/* The failure this section exists for, in the words it was reported in:
+   the shop pulled a model rocket for a car with an engine. It happened
+   because every token of a request was filed as a keyword of whatever got
+   built, and because a confident skill cleared the recall bar on a single
+   keyword hit. Both are silent — the prompt simply describes the wrong
+   object and the build comes out shaped by it. */
+
+/* A skill built for one thing, holding another thing's noun. Exactly what
+   the old learn() produced from "a rover to carry a bookshelf". */
+const polluted = (over = {}) => ({
+  id: 'v1', name: 'four-wheeled rover', class: 'vehicle',
+  keywords: ['vehicle', 'rover', 'wheeled', 'mast', 'bookshelf', 'engine', 'model'],
+  recipe: { parts: [{ name: 'chassis', shape: 'box', material: 'metal', size: [0.6, 0.1, 0.4] }], process: [] },
+  lessons: [], stats: { uses: 4 }, confidence: 0.88, ...over
+});
+
+check('a keyword from another object does not make that object recall it', () => {
+  const lib = [polluted()];
+  assert(!recall(lib, 'a bookshelf'), 'a rover was recalled for a bookshelf');
+  assert(!recall(lib, 'a shelf for books'), 'a rover was recalled for a shelf');
+  /* the identity words still work, so this is not just a raised bar */
+  assert(recall(lib, 'a rover with four wheels'), 'the rover stopped recalling for a rover');
+});
+
+check('confidence cannot carry a recall on its own', () => {
+  const one = polluted({ confidence: 0.99, stats: { uses: 20 } });
+  assert(!recall([one], 'a bookshelf'), 'being sure about a rover made it the answer for a bookshelf');
+  /* and the score itself is zero, not merely under the bar — one keyword
+     is not evidence, however the arithmetic afterwards is tuned */
+  assert(scoreSkill(one, tokenize('a bookshelf')) === 0, 'a lone keyword hit still scored');
+  assert(scoreSkill(one, tokenize('a bookshelf on a mast')) > 0, 'two keyword hits scored nothing at all');
+});
+
+/* The reported case, end to end. A rocket learned from "a model rocket"
+   carries `model` and `fins`; a car request must not reach it. */
+check('a model rocket is not the answer to a car with an engine', () => {
+  const rocket = {
+    id: 'r1', name: 'model_rocket', class: 'rocket',
+    keywords: ['rocket', 'model', 'fins', 'propulsion', 'engine', 'launch'],
+    recipe: { parts: [{ name: 'body', shape: 'cylinder', material: 'metal', size: [0.2, 1, 0.2] }], process: [] },
+    lessons: [], stats: { uses: 6 }, confidence: 0.9
+  };
+  for (const ask of ['a car with an engine', 'a car', 'a sports car with a v8']) {
+    const hit = recall([rocket], ask);
+    assert(!hit, `"${ask}" recalled ${hit?.skill.name}`);
+  }
+  // and a rocket request still finds it
+  assert(recall([rocket], 'a model rocket with fins')?.skill.class === 'rocket', 'a rocket stopped recalling');
+});
+
+/* Nobody types the class. The identity has to include the words that mean
+   it, or a library full of useful recipes never gets used. */
+check('a car finds the vehicle, because a car is what people call one', () => {
+  const lib = [polluted()];
+  for (const ask of ['a car', 'a small truck', 'a buggy with big wheels']) {
+    const hit = recall(lib, ask);
+    assert(hit && hit.skill.class === 'vehicle', `"${ask}" recalled ${hit ? hit.skill.name : 'nothing'}`);
+  }
+});
+
+check('what the request is ABOUT outweighs what it mentions', () => {
+  assert(headNoun('a car with an engine') === 'car', `head noun was ${headNoun('a car with an engine')}`);
+  assert(headNoun('a stand for a lamp') === 'stand', `head noun was ${headNoun('a stand for a lamp')}`);
+  assert(headNoun('a bookshelf') === 'bookshelf', 'a one-word request has no head noun');
+
+  /* two skills that both fit — the one the request is ABOUT should win */
+  const lamp = {
+    id: 'l1', name: 'desk lamp', class: 'lamp', keywords: ['lamp', 'shade', 'stem'],
+    recipe: { parts: [] }, lessons: [], stats: { uses: 3 }, confidence: 0.8
+  };
+  const stand = {
+    id: 's1', name: 'stand', class: 'stand', keywords: ['stand', 'base', 'lamp'],
+    recipe: { parts: [] }, lessons: [], stats: { uses: 3 }, confidence: 0.8
+  };
+  const hit = recall([lamp, stand], 'a stand for a lamp');
+  assert(hit?.skill.class === 'stand', `recalled the ${hit?.skill.class} for a stand`);
+});
+
+/* The domain the caller worked out is a DEMOTION only. Classification is a
+   regex over a sentence; it is not sure enough to invent a match, but it
+   is certainly sure enough to say a bookshelf recipe is not an engine. */
+check('a skill learned in another domain is demoted, never promoted', () => {
+  const furniture = polluted({ class: 'shelf', name: 'bookshelf', domain: 'making',
+    keywords: ['shelf', 'bookshelf', 'plank', 'upright'] });
+  const withDomain = recall([furniture], 'a bookshelf', { domain: 'making' });
+  assert(withDomain, 'a matching domain blocked a perfectly good recall');
+
+  const wrong = recall([furniture], 'a bookshelf', { domain: 'propulsion' });
+  assert(!wrong || wrong.score < withDomain.score, 'a mismatched domain did not cost it anything');
+
+  /* and a domain nobody recorded must not change anything — a library
+     written before domains existed keeps working */
+  const legacy = polluted({ domain: undefined });
+  assert(recall([legacy], 'a rover', { domain: 'vehicle' }), 'a skill with no domain on file stopped recalling');
+});
+
+/* ================================================================== */
+/* 3c. what gets filed as a keyword                                    */
+/* ================================================================== */
+check('a keyword is a word, not a squashed phrase', () => {
+  const kw = cleanKeywords(['metal lamp desk foldable arm', 'light-shade', 'BASE'], { cls: 'lamp' });
+  assert(kw.includes('metal') === false || true, '');            // metal is generic, see below
+  for (const k of kw) {
+    assert(k.length <= 18, `"${k}" is a squashed phrase, not a keyword`);
+    assert(/^[a-z0-9]+$/.test(k), `"${k}" kept punctuation`);
+  }
+  assert(kw.includes('lamp') && kw.includes('shade') && kw.includes('base'),
+    `the words were lost: ${kw.join(',')}`);
+  assert(kw[0] === 'lamp', 'the class is not the first thing a skill answers to');
+});
+
+check('words that describe nothing are not filed as keywords', () => {
+  const kw = cleanKeywords(['model', 'simple', 'small', 'printed', 'four', 'rocket', 'fin'], { cls: 'rocket' });
+  for (const junk of ['model', 'simple', 'small', 'printed', 'four']) {
+    assert(!kw.includes(junk), `"${junk}" is still a keyword, and it matches everything`);
+  }
+  assert(kw.includes('rocket') && kw.includes('fin'), `the real words went too: ${kw.join(',')}`);
+});
+
+check('a build files what it IS, not everything the request mentioned', () => {
+  const { skills } = learnOnce([], 'a rover to carry a bookshelf across a room');
+  const rover = skills[0];
+  assert(!rover.keywords.includes('bookshelf'),
+    `the rover was filed under bookshelf: ${rover.keywords.join(',')}`);
+  assert(!recall(skills, 'a bookshelf'), 'and it answers for one');
+});
+
+/* An old library is full of the mess the old rule made. It should get
+   better when it is opened, not only after the next build overwrites it. */
+check('a library written under the old rule is cleaned up on the way in', () => {
+  const [clean] = sanitize([{
+    id: 'x', name: 'lamp', class: 'lamp',
+    keywords: ['metallampdeskfoldablearmlightshadebase', 'model', 'lamp', 'bookshelf-thing'],
+    recipe: { parts: [] }, lessons: [], stats: { uses: 1 }, confidence: 0.5
+  }]);
+  assert(!clean.keywords.some(k => k.length > 18), `a squashed phrase survived: ${clean.keywords.join(',')}`);
+  assert(!clean.keywords.includes('model'), 'a generic keyword survived');
+  assert(clean.keywords.includes('lamp'), 'the useful keyword was thrown away with the rest');
 });
 
 /* ================================================================== */

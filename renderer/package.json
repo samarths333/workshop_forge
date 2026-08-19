@@ -1,0 +1,4 @@
+{
+  "//": "Everything in renderer/ is an ES module. The browser knows that from <script type=\"module\">, but Node does not — it reads the nearest package.json, and the app's own has no \"type\" because main.js is CommonJS. Without this file, main.js's dynamic import() of the provider table fails with `Unexpected token 'export'` and the whole app boots into a black window with no error anywhere. Node 22 happens to sniff the syntax and recover, which is why the tests passed while the app did not.",
+  "type": "module"
+}

@@ -30,7 +30,7 @@
    ===================================================================== */
 
 export const SHAPES = ['box', 'panel', 'cylinder', 'rod', 'cone', 'sphere', 'torus', 'wedge', 'gear'];
-export const MATERIALS = ['cardboard', 'metal', 'painted', 'plastic', 'glass', 'wood'];
+export const MATERIALS = ['cardboard', 'metal', 'alloy', 'painted', 'plastic', 'glass', 'wood'];
 export const FACES = ['top', 'bottom', 'left', 'right', 'front', 'back', 'inside'];
 export const ARRAY_MODES = ['none', 'ring', 'mirror_x', 'mirror_z', 'quad', 'row'];
 
@@ -255,9 +255,18 @@ function placeOnParent(inst, parent) {
       face = inst.indexInGroup === 0 ? 'back' : 'front';
     }
 
+    /* A paired RING on a top or bottom face has already had its direction
+       expressed by which parent it landed on — a propeller on motor three
+       is out at motor three. Adding the ring's own radius on top of that
+       walks it a second radius further out every level, so a drone came
+       out with its props orbiting outside its own motors. On a SIDE face
+       the offset is a bearing rather than a translation and is kept. */
+    const rx = inst.paired && inst.ring ? 0 : ox;
+    const rz = inst.paired && inst.ring ? 0 : oz;
+
     switch (face) {
-      case 'top':    pos = [px + ox, py + ph[1] + ih[1], pz + oz]; fixed = false; break;
-      case 'bottom': pos = [px + ox, py - ph[1] - ih[1], pz + oz]; break;
+      case 'top':    pos = [px + rx, py + ph[1] + ih[1], pz + rz]; fixed = false; break;
+      case 'bottom': pos = [px + rx, py - ph[1] - ih[1], pz + rz]; break;
       case 'left':   pos = [px - ph[0] - ih[0], py, pz + oz]; break;
       case 'right':  pos = [px + ph[0] + ih[0], py, pz + oz]; break;
       case 'front':  pos = [px + ox, py, pz + ph[2] + ih[2]]; break;
@@ -296,6 +305,11 @@ export function solveAssembly(parts) {
         name: e.name || e.shape || 'part',
         shape: e.shape || 'box',
         material: e.material || 'cardboard',
+        // carried through untouched: the mechanical solver has no opinion
+        // about electronics, it just must not lose the label the wiring
+        // and the bench both key off
+        component: e.component || null,
+        value: e.value ?? null,
         color: e.color || null,
         size, rot,
         half: halfExtents(e.shape, size, rot),
@@ -346,8 +360,17 @@ export function solveAssembly(parts) {
       // attach to the matching sibling in an arrayed parent when the counts
       // line up (wheel i on hub i), otherwise to the parent's first instance
       const family = bySrc.get(to);
-      const parent = family.length === inst.ofGroup ? family[inst.indexInGroup] : family[0];
+      const paired = family.length === inst.ofGroup && inst.ofGroup > 1;
+      const parent = paired ? family[inst.indexInGroup] : family[0];
       if (!done.has(parent.i)) { next.push(inst); continue; }
+      /* Paired one-to-one, the child's own spread is ALREADY expressed by
+         which parent it landed on — piston i is on cylinder i, and cylinder
+         i is where the spacing put it. Applying the row offset on top of
+         that spreads the children at twice the pitch, which walks the
+         outer ones clean out of the parts they live in. A ring keeps its
+         offset: there the direction is what says which way it faces. */
+      if (paired && !inst.ring) inst.offset = [0, 0, 0];
+      inst.paired = paired;
       placeOnParent(inst, parent);
       done.add(inst.i);
     }
@@ -414,6 +437,24 @@ function settle(insts, notes, report) {
     const bottom = inst.pos[1] - inst.half[1];
     if (bottom <= 0.015 && bottom >= -0.015) continue;
 
+    /* Anything of OURS that reaches below us is what we are standing on,
+       whatever face it went on — a car's wheels hang off the ends of the
+       chassis, a crate's walls off its sides. Those parents are not
+       floating and must not be dropped: the assembly lift has already put
+       the lowest point of the whole build on the pedestal, so moving the
+       parent down only buries its own wheels and calls it ride height.
+
+       Note this SKIPS the part rather than resting it on the child's top.
+       A child that reaches below us is not necessarily under us — a motor's
+       rotor is `inside` its stator and reaches past both ends of it, and
+       resting the stator on top of that would stand the motor on itself. */
+    let heldFromBelow = false;
+    for (const o of insts) {
+      if (o === inst || o.parent !== inst.i) continue;
+      if (o.pos[1] - o.half[1] < bottom - 0.012) { heldFromBelow = true; break; }
+    }
+    if (heldFromBelow) continue;
+
     let support = 0;                                   // the pedestal
     for (const o of insts) {
       if (o === inst) continue;
@@ -448,6 +489,14 @@ function separate(insts) {
       const a = insts[i], b = insts[j];
       if (a.parent === b.i || b.parent === a.i) continue;
       if (a.group === b.group && a.ofGroup > 1) continue;      // siblings in one array
+      /* `inside` is somebody saying, in as many words, that this part
+         belongs within another one — a shaft down the middle of a motor, a
+         piston in its bore. The parent/child pair above is already spared,
+         but the thing it lives inside is often a SIBLING (the shaft hangs
+         off the stator and runs through the rotor), and shoving it out
+         sideways there put the shaft alongside the motor and toppled the
+         whole assembly. Nothing threw; it just stood there wrong. */
+      if (a.face === 'inside' || b.face === 'inside') continue;
 
       const ox = overlapAxis(a, b, 0), oy = overlapAxis(a, b, 1), oz = overlapAxis(a, b, 2);
       if (ox <= 0.001 || oy <= 0.001 || oz <= 0.001) continue;

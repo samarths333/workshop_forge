@@ -3,7 +3,12 @@
     "allow": [
       "Bash(pkill -f \"electron .\")",
       "Bash(npm start *)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Read(//Users/samarthsringeri/.claude-mem/**)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\({k:\\('SET' if 'TOKEN' in k else v\\) for k,v in d.items\\(\\)}\\)\")",
+      "Bash(node *)",
+      "Bash(npx claude-mem *)",
+      "mcp__plugin_claude-mem_mcp-search__session_start_context"
     ]
   }
 }

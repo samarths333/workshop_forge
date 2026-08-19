@@ -15,10 +15,11 @@
 <header id="bar">
   <div class="lights"></div>
   <div class="wordmark">WORKSHOP&nbsp;<b>FORGE</b></div>
-  <div class="tag">four rooms · one very literal robot</div>
+  <div class="tag">one floor · five specialists · one manager · one engineer</div>
   <div class="spacer"></div>
   <div id="refs" class="badge refs" hidden></div>
   <div id="recall" class="badge recall" hidden></div>
+  <div id="studyBadge" class="badge study" hidden></div>
   <div id="engine" class="badge idle">no engine yet</div>
   <button id="btnCad" class="ghost">Bench</button>
   <button id="btnSettings" class="ghost">Engine</button>
@@ -28,13 +29,20 @@
   <!-- ── command column ───────────────────────────────────────── -->
   <aside id="left">
     <section class="pane">
-      <h2>Tell Rivet what to build</h2>
+      <h2>Tell Jarvis what to build</h2>
       <textarea id="req" rows="3" placeholder="a desk lamp with a folding arm"></textarea>
       <div class="row">
         <button id="btnBuild" class="primary">Build it</button>
         <button id="btnStop" class="ghost" disabled>Stop</button>
       </div>
       <div class="chips" id="chips"></div>
+      <p class="fine" id="jarvisSay">Jarvis takes the request, the floor manager splits it between the trades, and they work it at the same time.</p>
+    </section>
+
+    <section class="pane">
+      <h2>The floor</h2>
+      <div id="crewRows" class="crew"></div>
+      <p class="fine">Each trade gets its own brief and its own materials. The manager sets the frame and the mount points first, so four of them can work at once and still produce one object.</p>
     </section>
 
     <section class="pane grow">
@@ -45,8 +53,8 @@
     <section class="pane">
       <h2>Camera</h2>
       <div class="rooms" id="roomBtns"></div>
-      <label class="check"><input type="checkbox" id="followCam" checked> Follow Rivet</label>
-      <p class="fine">Drag to orbit · scroll to zoom · <b>1–4</b> jump rooms · <b>F</b> refollow</p>
+      <label class="check"><input type="checkbox" id="followCam" checked> Follow the work</label>
+      <p class="fine">Drag to orbit · scroll to zoom · <b>1–5</b> jump stations · <b>F</b> refollow</p>
     </section>
   </aside>
 
@@ -57,7 +65,7 @@
       <span id="capAct">standing by</span><em id="capSay"></em>
       <div id="capProg"><div id="capBar"></div></div>
     </div>
-    <div id="roomTag">CARDBOARD</div>
+    <div id="roomTag">ASSEMBLY</div>
 
     <!-- ── the bench: CAD workspace over the same canvas ─────────── -->
     <div id="cad" hidden>
@@ -89,6 +97,9 @@
           <input type="range" id="cadExplode" min="0" max="1" step="0.01" value="0">
         </div>
         <div class="cadGroup">
+          <button id="cadRun" data-tool="run" title="turn the engine over — R">Run</button>
+        </div>
+        <div class="cadGroup">
           <button id="cadMeasure" data-tool="measure" title="clearance between two parts — M">Measure</button>
           <button id="cadIsolate" data-tool="isolate" title="hide everything else — I">Isolate</button>
         </div>
@@ -113,15 +124,23 @@
       </div>
 
       <aside id="cadSide" class="cadPanel">
-        <div class="cadHead"><h3>Part</h3></div>
+        <div class="cadHead">
+          <h3>Part</h3>
+          <button id="cadOptimise" class="cadHeadBtn" title="what an engineer would change — O">Look it over</button>
+        </div>
+        <div id="cadFindings" class="cadFindings"><div class="fEmpty">Nothing on the bench yet.</div></div>
         <div class="cadPropsBody"></div>
+        <!-- the shape editor. Hidden until somebody asks for it, because a
+             profile is not something you need in front of you to place a
+             part — only to make a new kind of one. -->
+        <div id="cadShapes" class="cadShapes" style="display:none"></div>
         <div class="cadActions">
           <button id="btnUndo" data-cmd="undo" disabled title="⌘Z">Undo</button>
           <button id="btnRedo" data-cmd="redo" disabled title="⇧⌘Z">Redo</button>
         </div>
         <div class="cadActions">
           <button data-cmd="add">Add part</button>
-          <button data-cmd="teach" class="primary">Teach Rivet this</button>
+          <button data-cmd="teach" class="primary">Teach the floor this</button>
         </div>
         <p class="fine" id="cadTeachNote">Corrections here become the recipe he starts from next time.</p>
       </aside>
@@ -135,7 +154,7 @@
       <div class="thead">
         <span class="stamp">JOB TRAVELER</span>
         <h3 id="jobTitle">— no job on the floor —</h3>
-        <p id="jobSummary">Give Rivet a build request and the steps land here, stamped off as he finishes each one.</p>
+        <p id="jobSummary">Give the floor a build request. Every operation lands here stamped with whose trade it is.</p>
       </div>
       <ol id="steps"></ol>
       <div class="tfoot"><span id="jobCount">0 / 0 operations</span><span id="jobParts">0 parts</span></div>
@@ -149,7 +168,7 @@
 
     <section class="learned">
       <div class="lhead">
-        <h3>What Rivet has learned</h3>
+        <h3>What the floor has learned</h3>
         <span id="skillCount" class="lcount">nothing yet</span>
       </div>
       <div id="skills"></div>
@@ -161,43 +180,40 @@
   </aside>
 </main>
 
+<!-- ── the cursor: ⌘K ─────────────────────────────────────────── -->
+<div id="palette" hidden>
+  <div class="palBox">
+    <div class="palTop">
+      <span class="palPrompt">⌘K</span>
+      <input id="palInput" type="text" spellcheck="false" autocomplete="off" placeholder="What do you want to do?">
+    </div>
+    <ul id="palList"></ul>
+    <div id="palNote" class="palNote"></div>
+  </div>
+</div>
+
 <!-- ── settings ───────────────────────────────────────────────── -->
 <div id="modal" hidden>
   <div class="sheet">
-    <h2>Where Rivet's head comes from</h2>
-    <p class="fine">Primary is NVIDIA NIM over the network. If the key is missing, the model errors, or the request times out, it falls through to Ollama on this machine. If both are down, a built-in keyword planner keeps the shop running.</p>
-
-    <label>Routing
-      <select id="cfgProvider">
-        <option value="auto">Auto — NIM, then Ollama, then offline</option>
-        <option value="nim">NVIDIA NIM only</option>
-        <option value="ollama">Ollama only</option>
-        <option value="offline">Offline planner only</option>
-      </select>
-    </label>
+    <h2>Where the floor's head comes from</h2>
+    <p class="fine">Nine engines, and anything that speaks the OpenAI protocol. Add a key to as many as you like, drag nothing — the shop tries them in the order below and moves on the moment one will not answer. With no key at all it still builds, offline, from what it already knows.</p>
 
     <fieldset>
-      <legend>NVIDIA NIM</legend>
-      <label>API key <input id="cfgNimKey" type="password" placeholder="nvapi-..." spellcheck="false"></label>
-      <label>Model
-        <input id="cfgNimModel" list="nimModels" spellcheck="false">
-        <datalist id="nimModels"></datalist>
-      </label>
-      <p class="fine">Free key at <a href="#" data-url="https://build.nvidia.com">build.nvidia.com</a> — developer program, no card. Rate limited around 40 requests/minute, which is far more than this app needs.</p>
+      <legend>Engines</legend>
+      <div id="providerList" class="provList"></div>
+      <p class="fine">A key is stored on this machine and never leaves it except to go to the provider it belongs to. Tick an engine to put it in the chain; the order of the chain is the order they are ticked in, top to bottom.</p>
     </fieldset>
 
     <fieldset>
-      <legend>Ollama (fallback)</legend>
-      <label>Model
-        <input id="cfgOllamaModel" list="ollamaModels" spellcheck="false">
-        <datalist id="ollamaModels"></datalist>
-      </label>
-      <p class="fine">Pull one first: <code>ollama pull llama3.2:3b</code>. Ollama gets the JSON schema enforced at the decoder, so a 3B model is enough here.</p>
+      <legend>Which engine does which job</legend>
+      <p class="fine">A build is not one call. The floor manager writes the work order and the inspector checks the result — two calls that want real reasoning. The five specialists answer small, tightly-schema'd briefs, all at once — five calls that want speed and not much else. Point them at different engines and you get a better object for less.</p>
+      <div id="tierRows" class="tierRows"></div>
+      <p class="fine">Leave a job unset and it falls up to the next one that is set, so a single engine needs no wiring at all.</p>
     </fieldset>
 
     <fieldset>
       <legend>Reference designs</legend>
-      <p class="fine">Before planning, Rivet looks up how people actually make the thing you asked for. Real part names and proportions from published models, fed straight into the prompt — it is the cheapest way to stop him guessing.</p>
+      <p class="fine">Before planning, the floor looks up how people actually make the thing you asked for. Real part names and proportions from published models, fed into the manager's work order and into every specialist's brief — it is the cheapest way to stop them guessing.</p>
       <label>Look things up on
         <select id="cfgReferences">
           <option value="auto">Thingiverse, then Printables if it comes up short</option>
@@ -206,10 +222,33 @@
           <option value="off">Don't look anything up</option>
         </select>
       </label>
+      <label>Search the open web via
+        <input id="cfgSearx" type="text" placeholder="leave blank for the public instances" spellcheck="false">
+      </label>
+      <p class="fine">A <a href="#" data-url="https://searxng.org">SearXNG</a> instance — no key, no account, nothing to sign up for. <b>Run your own and this is dependable:</b> <code>docker run -d -p 8888:8080 searxng/searxng</code>, then put <code>http://127.0.0.1:8888</code> above. Left blank it tries public instances and falls back to DuckDuckGo, which works until it doesn't — most public instances now ship with the JSON API off and sit behind bot checks. A failed lookup never blocks a build; press <b>Test both</b> to see which one is answering.</p>
+      <label class="check">
+        <input id="cfgReadPages" type="checkbox" checked>
+        Open and read the best results
+      </label>
+
       <label>Thingiverse app token
         <input id="cfgThingiverse" type="password" placeholder="required for Thingiverse" spellcheck="false">
       </label>
       <p class="fine">Free at <a href="#" data-url="https://www.thingiverse.com/developers/apps">thingiverse.com/developers/apps</a> — create an app, copy the <b>App Token</b>. Everything on Thingiverse is openly licensed, which is why it goes first. Printables needs no token but its endpoint is undocumented, so it is treated as best-effort. Either way a failed lookup never blocks a build.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>What he does with the shop to himself</legend>
+      <p class="fine">Left alone, the floor goes and finds something to build: the class it keeps getting wrong, the next thing on the ladder it has never made, a domain it has never touched. It stops the instant you type. What it teaches itself is capped below what you teach it, and a study build that falls over files its lessons and no recipe — otherwise a night of practice makes the library worse.</p>
+      <label class="check">
+        <input id="cfgStudy" type="checkbox">
+        Let the floor practise when the shop is idle
+      </label>
+      <label class="check">
+        <input id="cfgStudyEngine" type="checkbox">
+        …and use the engine while it does
+      </label>
+      <p class="fine">Unattended study runs on the offline planner and what the floor already knows unless you tick the second box. Nobody wants to find their API key went overnight on a robot practising stools.</p>
     </fieldset>
 
     <div class="row">

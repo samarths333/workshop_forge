@@ -207,3 +207,24 @@ export function faceTex(mood = 'happy') {
   noise(g, 256, 256, 10);
   return finish(c, 1, 1);
 }
+
+/* A hi-vis name plate for a robot's chest. Five of them look identical from
+   across the shop otherwise, and "which one is welding" is the single most
+   asked question about a floor with a crew on it. */
+export function nameTex(name, trade = '') {
+  const { c, g } = cv(512, 256);
+  g.fillStyle = '#f0e6d2'; g.fillRect(0, 0, 512, 256);
+  for (let y = 0; y < 256; y += 7) { g.fillStyle = 'rgba(120,90,50,0.08)'; g.fillRect(0, y, 512, 2); }
+  g.fillStyle = '#1b1410';
+  g.font = 'bold 108px "Helvetica Neue", Arial, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(String(name).toUpperCase().slice(0, 9), 256, 104);
+  if (trade) {
+    g.fillStyle = '#6a5340';
+    g.font = '44px "Helvetica Neue", Arial, sans-serif';
+    g.fillText(String(trade).toUpperCase().slice(0, 22), 256, 186);
+  }
+  g.strokeStyle = '#1b1410'; g.lineWidth = 10; g.strokeRect(5, 5, 502, 246);
+  noise(g, 512, 256, 8);
+  return finish(c, 1, 1);
+}

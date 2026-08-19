@@ -12,6 +12,7 @@
 import * as THREE from 'three';
 import { partGeometry, chamferBox } from '../renderer/shapes.js';
 import { effectiveSize, halfExtents, SHAPES, solveAssembly } from '../renderer/assembly.js';
+import { BUILTIN_SHAPES, registerShapes, shapeIds, newShapeFrom } from '../renderer/shapelib.js';
 import { trianglesFrom, toSTL } from '../renderer/export3d.js';
 
 const LAMP = [
@@ -101,6 +102,99 @@ check('geometry is real: no NaN vertices, sane triangle counts', () => {
       assert(Number.isFinite(pos.array[i]), `${shape} has a NaN vertex`);
     }
     assert(g.attributes.normal, `${shape} has no normals — it will render black`);
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * shapes that are definitions rather than code                        *
+ * ------------------------------------------------------------------ */
+/* The nine above are drawn by hand and the solver has an opinion about
+   each of them. Everything else is a PROFILE, and assembly.js has never
+   heard of any of it — effectiveSize hands back the size it was given.
+   That is only safe if the mesh really does measure that, which is what
+   this checks, on every shape the shop ships and on one nobody has
+   written yet. The failure it prevents is silent: a part that is drawn
+   10% shorter than the solver believes hovers, and nothing errors. */
+check('a shape built from a profile is exactly the size the solver assumed', () => {
+  registerShapes([
+    /* something asymmetric, deep in one corner of the unit box, to catch a
+       normalisation that only works for shapes that were already centred */
+    { id: 'test_scoop', kind: 'revolve', profile: [[0.1, 0.2], [0.9, 0.25], [0.7, 0.8], [0.15, 0.9]] },
+    { id: 'test_wonky', kind: 'extrude', outline: [[0.2, 0.1], [0.9, 0.15], [0.75, 0.8], [0.25, 0.6]] }
+  ]);
+
+  const bad = [];
+  const all = [...BUILTIN_SHAPES.map(s => s.id), 'test_scoop', 'test_wonky'];
+  for (const shape of all) {
+    for (const size of SIZES) {
+      const want = effectiveSize(shape, size);
+      /* the whole point: no special case, so it must be the size asked for */
+      for (let ax = 0; ax < 3; ax++) {
+        if (Math.abs(want[ax] - size[ax]) > 1e-9) {
+          bad.push(`${shape}: the solver has a size rule for it, so it is no longer just a profile`);
+        }
+      }
+      const m = measure(shape, size);
+      for (let ax = 0; ax < 3; ax++) {
+        const slack = Math.max(0.02, want[ax] * 0.06);
+        if (Math.abs(m.size[ax] - want[ax]) > slack) {
+          bad.push(`${shape} ${size.join('x')} axis ${'xyz'[ax]}: solver assumed ${want[ax].toFixed(3)}, mesh is ${m.size[ax].toFixed(3)}`);
+        }
+        if (Math.abs(m.centre[ax]) > Math.max(0.015, want[ax] * 0.04)) {
+          bad.push(`${shape} ${size.join('x')} sits ${m.centre[ax].toFixed(3)} off centre on ${'xyz'[ax]}`);
+        }
+      }
+    }
+  }
+  registerShapes([]);
+  assert(!bad.length, bad.slice(0, 8).join('\n          '));
+});
+
+check('a shape built from a profile is real geometry, and not too much of it', () => {
+  for (const shape of BUILTIN_SHAPES.map(s => s.id)) {
+    const g = partGeometry(shape, [0.6, 0.5, 0.4]);
+    const pos = g.attributes.position;
+    assert(pos && pos.count > 3, `${shape} produced ${pos ? pos.count : 0} vertices`);
+    assert(pos.count < 20000, `${shape} produced ${pos.count} vertices — too heavy for a part`);
+    for (let i = 0; i < pos.array.length; i++) {
+      assert(Number.isFinite(pos.array[i]), `${shape} has a NaN vertex`);
+    }
+    assert(g.attributes.normal, `${shape} has no normals — it will render black`);
+  }
+});
+
+/* A shape that has been deleted, or one from a library file somebody else
+   made, must not take the build down with it — it falls back to a box the
+   same way every other unknown value in a plan does. */
+check('a shape that no longer exists still draws something', () => {
+  registerShapes([]);
+  const g = partGeometry('a_shape_that_was_deleted', [0.5, 0.4, 0.3]);
+  g.computeBoundingBox();
+  const b = g.boundingBox;
+  const got = [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z];
+  [0.5, 0.4, 0.3].forEach((want, ax) => {
+    assert(Math.abs(got[ax] - want) < 0.02, `the fallback box is ${got[ax].toFixed(3)} on ${'xyz'[ax]}, wanted ${want}`);
+  });
+});
+
+/* And the solver has to place one. A profile shape is not special to
+   assembly.js in any way, which is the claim — so a stack of them stands
+   on the pedestal with nothing floating. */
+check('the solver stacks profile shapes with nothing hovering', () => {
+  registerShapes([]);
+  const solved = solveAssembly([
+    { name: 'base', shape: 'ring_plate', material: 'metal', size: [0.6, 0.08, 0.6] },
+    { name: 'post', shape: 'pipe', material: 'metal', size: [0.16, 0.7, 0.16], attach: { to: 0, face: 'top' } },
+    { name: 'cap', shape: 'dome', material: 'painted', size: [0.3, 0.2, 0.3], attach: { to: 1, face: 'top' } }
+  ]);
+  const lowest = Math.min(...solved.instances.map(i => i.pos[1] - i.half[1]));
+  assert(Math.abs(lowest) < 0.02, `the stack sits ${lowest.toFixed(3)}m off the pedestal`);
+  for (const inst of solved.instances) {
+    const g = partGeometry(inst.shape, inst.size);
+    g.computeBoundingBox();
+    const h = (g.boundingBox.max.y - g.boundingBox.min.y) / 2;
+    assert(Math.abs(h - inst.half[1]) < Math.max(0.02, h * 0.07),
+      `the solver thinks the ${inst.name} is ${inst.half[1].toFixed(3)} tall, the mesh is ${h.toFixed(3)}`);
   }
 });
 

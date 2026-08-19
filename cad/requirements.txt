@@ -1,0 +1,9 @@
+# The CAD kernel. Optional: without it the shop builds exactly as it always
+# did, out of primitives on an attach tree, and `wantsKernel` reports that
+# it is not installed rather than failing a build.
+#
+#   pip install -r cad/requirements.txt
+#
+# build123d pulls OpenCascade (cadquery-ocp), which is a ~200MB native
+# wheel. That is the entire reason this is not a hard dependency.
+build123d>=0.9

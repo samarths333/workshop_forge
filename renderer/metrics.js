@@ -25,6 +25,8 @@ import { effectiveSize } from './assembly.js';
 /* kg/m³. Ordinary shop stock, not exotic alloys. */
 export const DENSITY = {
   metal: 7850,        // mild steel
+  alloy: 2700,        // cast and machined aluminium — a third of the steel, which
+                      // is the entire reason an engine is made of it
   painted: 7850,      // painted steel — the paint is not the part
   plastic: 1040,      // ABS
   wood: 650,          // beech-ish

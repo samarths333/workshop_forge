@@ -203,6 +203,46 @@ A('stack_boxes', 'stacking blanks', {
 });
 
 /* ---------------------------------------------------------------- */
+/* 3b · electronics room                                             */
+/* ---------------------------------------------------------------- */
+/* Bench work, all of it: the whole room happens inside a 200mm square,
+   so these are close, still, small-amplitude clips. A welder swings his
+   whole arm; someone soldering moves a wrist and holds their breath. */
+A('solder', 'soldering a joint', {
+  room: 'electronics', dur: 2.4, propR: 'iron', propL: 'solderreel', gear: 'loupe',
+  pose: { armR: [-1.34, 0, -0.34], foreR: [-0.72, 0, 0], armL: [-1.24, 0, 0.42], foreL: [-0.66, 0, 0], torso: [0.34, 0, 0], head: [0.44, 0, 0], thighL: [-0.24, 0, 0.12], thighR: [-0.24, 0, -0.12], shinL: [0.3, 0, 0], shinR: [0.3, 0, 0] },
+  osc: [{ j: 'handR', a: 0, amp: 0.045, f: 1.1 }, { j: 'foreL', a: 2, amp: 0.05, f: 0.8 }],
+  bob: { amp: 0.006, f: 0.5, o: -0.08 }, mood: 'focus', fx: 'steam', fxRate: 1.4, light: 0xffb066
+});
+A('strip_wire', 'stripping a wire', {
+  room: 'electronics', dur: 1.9, propR: 'strippers',
+  pose: { armR: [-1.28, 0, -0.3], foreR: [-0.86, 0, 0], armL: [-1.22, 0, 0.34], foreL: [-0.8, 0, 0], torso: [0.3, 0, 0], head: [0.4, 0, 0] },
+  osc: [{ j: 'foreR', a: 0, amp: 0.16, f: 1.6 }, { j: 'armL', a: 0, amp: 0.09, f: 1.6, p: Math.PI }],
+  mood: 'focus'
+});
+A('crimp', 'crimping a terminal', {
+  room: 'electronics', dur: 1.8, propR: 'pliers',
+  pose: { armR: [-1.3, 0, -0.28], foreR: [-0.82, 0, 0], armL: [-1.18, 0, 0.36], torso: [0.28, 0, 0], head: [0.38, 0, 0] },
+  osc: [{ j: 'handR', a: 2, amp: 0.28, f: 1.1 }], mood: 'focus'
+});
+A('breadboard', 'pushing parts into a breadboard', {
+  room: 'electronics', dur: 2.2, propL: 'breadboard', propR: 'tweezers',
+  pose: { armR: [-1.24, 0, -0.26], foreR: [-0.78, 0, 0], armL: [-1.1, 0, 0.4], foreL: [-0.7, 0, 0], torso: [0.26, 0, 0], head: [0.42, 0, 0] },
+  osc: [{ j: 'foreR', a: 0, amp: 0.2, f: 0.9 }], mood: 'focus'
+});
+A('meter_test', 'checking it with a meter', {
+  room: 'electronics', dur: 2.6, propR: 'multimeter',
+  pose: { armR: [-1.1, 0, -0.4], foreR: [-0.6, 0, 0], armL: [-1.26, 0, 0.4], foreL: [-0.7, 0, 0], torso: [0.2, 0, 0], head: [0.3, 0, 0] },
+  osc: [{ j: 'head', a: 1, amp: 0.14, f: 0.5 }, { j: 'foreL', a: 0, amp: 0.09, f: 0.7 }],
+  mood: 'think'
+});
+A('power_up', 'switching it on', {
+  room: 'electronics', dur: 2.2,
+  pose: { armR: [-1.0, 0, -0.5], foreR: [-0.4, 0, 0], armL: [-0.2, 0, 0.2], torso: [0.1, 0, 0], head: [0.2, 0, 0] },
+  osc: [{ j: 'foreR', a: 0, amp: 0.24, f: 0.7 }], mood: 'happy', fx: 'sparks', fxRate: 1.1, light: 0xffe6a0
+});
+
+/* ---------------------------------------------------------------- */
 /* 4 · metal room                                                    */
 /* ---------------------------------------------------------------- */
 A('weld', 'laying down a weld bead', {
@@ -285,6 +325,58 @@ A('pliers_bend', 'tweaking a tab with pliers', {
   room: 'metal', dur: 1.2, propR: 'pliers',
   pose: { armR: [-1.55, 0, -0.4], foreR: [-0.7, 0, 0], armL: [-1.3, 0, 0.5], torso: [0.28, 0, 0], head: [0.34, 0, 0] },
   osc: [{ j: 'handR', a: 1, amp: 0.5, f: 0.85 }, { j: 'foreR', a: 0, amp: 0.12, f: 0.85 }], mood: 'focus'
+});
+
+/* ---------------------------------------------------------------- */
+/* 4b · the machine shop                                             */
+/* ---------------------------------------------------------------- */
+/* The difference between this bay and the metal bay is the difference
+   between fabricating and machining: nothing here is hit, everything is
+   cut to a number and then measured. So the poses are still, the hands
+   move slowly, and half the clips are somebody looking at a gauge. */
+A('lathe_turn', 'turning it down to size', {
+  room: 'machining', dur: 2.2, propR: 'boringbar', gear: 'goggles',
+  pose: { armR: [-1.4, 0, -0.42], foreR: [-0.66, 0, 0], armL: [-1.2, 0, 0.5], foreL: [-0.5, 0, 0], torso: [0.24, 0, 0], head: [0.34, 0, 0] },
+  osc: [{ j: 'armR', a: 0, amp: 0.12, f: 0.42 }, { j: 'handL', a: 1, amp: 0.9, f: 0.42 }],
+  mood: 'focus', fx: 'chips', fxRate: 4
+});
+A('mill_cut', 'milling the face flat', {
+  room: 'machining', dur: 2.4, gear: 'goggles',
+  pose: { armR: [-1.3, 0, -0.5], foreR: [-0.6, 0, 0], armL: [-1.3, 0, 0.5], foreL: [-0.6, 0, 0], torso: [0.2, 0, 0], head: [0.36, 0, 0] },
+  osc: [{ j: 'handR', a: 1, amp: 0.8, f: 0.3 }, { j: 'handL', a: 1, amp: 0.5, f: 0.22 }, { j: 'head', a: 0, amp: 0.04, f: 0.6 }],
+  mood: 'focus', fx: 'chips', fxRate: 5
+});
+A('bore_cylinder', 'boring the cylinder', {
+  room: 'machining', dur: 2.6, propR: 'boringbar', gear: 'goggles',
+  pose: { armR: [-1.62, 0, -0.38], foreR: [-0.44, 0, 0], armL: [-1.35, 0, 0.5], torso: [0.3, 0, 0], head: [0.4, 0, 0] },
+  osc: [{ j: 'armR', a: 0, amp: 0.1, f: 0.26, o: -0.06 }, { j: 'handR', a: 1, amp: 0.08, f: 7 }],
+  mood: 'focus', fx: 'chips', fxRate: 3
+});
+A('press_fit', 'pressing it home', {
+  room: 'machining', dur: 1.6,
+  pose: { armR: [-1.7, 0, -0.3], foreR: [-0.3, 0, 0], armL: [-1.7, 0, 0.3], foreL: [-0.3, 0, 0], torso: [0.18, 0, 0], head: [0.3, 0, 0] },
+  osc: [{ j: 'armR', a: 0, amp: 0.3, f: 0.5 }, { j: 'armL', a: 0, amp: 0.3, f: 0.5 }, { j: 'torso', a: 0, amp: 0.08, f: 0.5 }],
+  mood: 'focus'
+});
+A('balance_crank', 'balancing it', {
+  room: 'machining', dur: 2.0, propL: 'micrometer',
+  pose: { armR: [-1.25, 0, -0.5], foreR: [-0.7, 0, 0], armL: [-1.3, 0, 0.48], foreL: [-0.62, 0, 0], torso: [0.16, 0, 0], head: [0.32, 0, 0] },
+  osc: [{ j: 'handR', a: 1, amp: 0.45, f: 0.55 }, { j: 'head', a: 1, amp: 0.1, f: 0.28 }], mood: 'focus'
+});
+A('torque_wrench', 'torquing it down', {
+  room: 'machining', dur: 1.5, propR: 'torquewrench',
+  pose: { armR: [-1.4, 0, -0.44], foreR: [-0.6, 0, 0], armL: [-1.15, 0, 0.5], torso: [0.24, 0, 0], head: [0.32, 0, 0] },
+  osc: [{ j: 'armR', a: 1, amp: 0.44, f: 0.62 }, { j: 'torso', a: 1, amp: 0.07, f: 0.62 }], mood: 'focus'
+});
+A('dial_gauge', 'checking the clearance', {
+  room: 'machining', dur: 2.2, propR: 'dialgauge', gear: 'loupe',
+  pose: { armR: [-1.5, 0, -0.36], foreR: [-0.6, 0, 0], armL: [-1.0, 0, 0.46], torso: [0.34, 0, 0], head: [0.44, 0, 0] },
+  osc: [{ j: 'handR', a: 1, amp: 0.12, f: 0.5 }, { j: 'head', a: 0, amp: 0.03, f: 0.35 }], mood: 'focus'
+});
+A('time_engine', 'timing it up', {
+  room: 'machining', dur: 2.4, propR: 'micrometer',
+  pose: { armR: [-1.35, 0, -0.46], foreR: [-0.66, 0, 0], armL: [-1.35, 0, 0.46], foreL: [-0.66, 0, 0], torso: [0.2, 0, 0], head: [0.34, 0, 0] },
+  osc: [{ j: 'handL', a: 1, amp: 1.1, f: 0.36 }, { j: 'handR', a: 1, amp: 0.2, f: 0.36, p: 0.5 }], mood: 'focus'
 });
 
 /* ---------------------------------------------------------------- */

@@ -11,6 +11,7 @@
 
 import * as THREE from 'three';
 import { effectiveSize, torusDims } from './assembly.js';
+import { shapeDef, revolvePoints, outlinePoints, holePoints } from './shapelib.js';
 
 /* A box with its edges knocked off. Raw BoxGeometry has infinitely sharp
    corners, which is the loudest tell that something is a primitive rather
@@ -58,8 +59,14 @@ export function partMaterial(kind, color, tex = {}) {
   const map = t => (color ? { map: t, color: new THREE.Color(color) } : { map: t });
   const P = o => new THREE.MeshPhysicalMaterial(o);
   switch ((kind || '').toLowerCase()) {
-    case 'metal': case 'steel': case 'aluminium': case 'aluminum':
+    case 'metal': case 'steel':
       return P({ ...map(tex.metal), metalness: 0.92, roughness: 0.3, envMapIntensity: 1.15 });
+    /* Machined alloy, not welded plate. A block or a compressor disc comes
+       off a cutter rather than out of a fire — brighter, smoother and
+       slightly warm, so a crankcase reads differently from the frame it
+       is bolted into even when both are grey. */
+    case 'alloy': case 'aluminium': case 'aluminum':
+      return P({ ...map(tex.metal), color: color ? new THREE.Color(color) : new THREE.Color(0xd7dde3), metalness: 0.86, roughness: 0.18, envMapIntensity: 1.3 });
     case 'painted': case 'paint':
       return P({ color: tint(0x3fa9c9), roughness: 0.42, metalness: 0.02, clearcoat: 0.85, clearcoatRoughness: 0.2, envMapIntensity: 0.95 });
     case 'glass': case 'acrylic':
@@ -129,6 +136,96 @@ export function partGeometry(shape, s) {
       return g;
     }
 
-    default: return chamferBox(a, b, c);
+    default: {
+      /* Not one of the nine the shop draws by hand — so it is a DEFINITION,
+         either one shipped in shapelib.js or one somebody made and saved.
+         Everything from here on is built from numbers, and a shape nobody
+         wrote code for is drawn by exactly the same path as one that
+         ships. That is the whole point of the file. */
+      const def = shapeDef(shape);
+      if (def) return definedGeometry(def, s);
+      return chamferBox(a, b, c);
+    }
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * shapes built from a definition                                      *
+ * ------------------------------------------------------------------ */
+
+/* THE INVARIANT. assembly.js has no special case for any of these, so its
+   `effectiveSize` returns the size it was handed — which means the mesh
+   has to measure exactly that, or every part built from a definition sits
+   a little above or below where the solver put it and nothing anywhere
+   throws. Rather than trusting each profile to be authored perfectly, the
+   finished geometry is measured and stretched onto the box it was asked
+   for. One place, one rule, and it holds for shapes that do not exist yet.
+
+   test/geometry.test.mjs measures every registered shape at six sizes for
+   exactly this reason. */
+function fitToBox(g, size) {
+  g.computeBoundingBox();
+  const b = g.boundingBox;
+  const have = [b.max.x - b.min.x, b.max.y - b.min.y, b.max.z - b.min.z];
+  const mid = [(b.max.x + b.min.x) / 2, (b.max.y + b.min.y) / 2, (b.max.z + b.min.z) / 2];
+  g.translate(-mid[0], -mid[1], -mid[2]);
+  const sx = have[0] > 1e-6 ? size[0] / have[0] : 1;
+  const sy = have[1] > 1e-6 ? size[1] / have[1] : 1;
+  const sz = have[2] > 1e-6 ? size[2] / have[2] : 1;
+  g.scale(sx, sy, sz);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* The same builder, reachable with a DEFINITION rather than a name — the
+   bench needs to draw a shape that is being typed and therefore is not
+   registered yet. Exported so there is exactly one geometry path: a
+   preview drawn by its own code is a preview that can be right about a
+   shape the floor then builds wrong. */
+export function previewGeometry(def, size) {
+  return definedGeometry(def, size);
+}
+
+function definedGeometry(def, size) {
+  const s = [Math.max(0.01, size[0]), Math.max(0.01, size[1]), Math.max(0.01, size[2])];
+  const g = def.kind === 'revolve' ? revolveGeometry(def, s) : extrudeGeometry(def, s);
+  return fitToBox(g, s);
+}
+
+/* A half-section spun about +Y. Lathe wants a strictly non-negative radius
+   and hates two points at the same height with the same radius — either
+   makes a degenerate ring of triangles with no normal, which renders as a
+   black band. Both are cleaned up here rather than in the definitions,
+   because the definitions are user data. */
+function revolveGeometry(def, size) {
+  const pts = revolvePoints(def, size);
+  const v = [];
+  for (const [r, y] of pts) {
+    const last = v[v.length - 1];
+    const rr = Math.max(0, r);
+    if (last && Math.abs(last.x - rr) < 1e-5 && Math.abs(last.y - y) < 1e-5) continue;
+    v.push(new THREE.Vector2(rr, y));
+  }
+  if (v.length < 2) v.push(new THREE.Vector2(size[0] / 2, size[1] / 2));
+  const g = new THREE.LatheGeometry(v, def.segments || 28);
+  /* A lathe is round in x and z by construction; the plan may have asked
+     for an oval, and the fit below is what delivers it. */
+  return g;
+}
+
+/* An outline pushed along +Z, with holes. Authored y is UP, which is what
+   anybody drawing a section means, and ExtrudeGeometry agrees — so the
+   only correction is centring the extrusion on its own origin, since the
+   solver puts a part's centre at its position. */
+function extrudeGeometry(def, size) {
+  const box = outlinePoints(def.outline, size);
+  const sh = new THREE.Shape(box.pts.map(([x, y]) => new THREE.Vector2(x, y)));
+  for (const hole of def.holes || []) {
+    const hp = holePoints(hole, box, size);
+    sh.holes.push(new THREE.Path(hp.map(([x, y]) => new THREE.Vector2(x, y))));
+  }
+  const depth = Math.max(0.004, size[2]);
+  const g = new THREE.ExtrudeGeometry(sh, { depth, bevelEnabled: false, curveSegments: 6 });
+  g.translate(0, 0, -depth / 2);
+  return g;
 }

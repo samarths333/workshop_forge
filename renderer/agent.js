@@ -1,9 +1,35 @@
 import { ACTION_IDS, CLIP_BY_ID, ACTIONS_BY_ROOM } from './animations.js';
 import { SHAPES, MATERIALS, FACES, ARRAY_MODES } from './assembly.js';
-import { SOURCES, classifyRequest, technicalBlock, domainKnowledge, domainParts } from './library.js';
+/* The vocabulary the planner may use is WIDER than the nine the solver
+   has size opinions about, and it changes while the app is running — a
+   shape saved on the bench has to be pickable on the next build without
+   a restart. SHAPE_ENUM is one array mutated in place for exactly that
+   reason, so the schema below keeps pointing at the current list. */
+import { SHAPE_ENUM, isShape, shapeBlock } from './shapelib.js';
+import { SOURCES, classifyRequest, technicalBlock, domainKnowledge, domainParts, readingBlock } from './library.js';
+import { COMPONENT_IDS, COMPONENTS, isComponent, bodyFor, validateWires, electricalBlock } from './circuit.js';
+import {
+  ENGINE_KINDS, ENGINE_ROLES, LAYOUT_IDS, validateEngine, sizeEngine, engineParts,
+  specFromRequest, engineBlock, describeEngine, ENGINE_RE
+} from './engine.js';
+import { ROLE_IDS, roleForMaterial } from './roles.js';
+import { matchArchetype, partsOf, compose, fitFactor, catalogBlock, catalogMotion, MOVERS } from './catalog.js';
 
-export const ROOM_KEYS = ['software', 'cardboard', 'finished', 'metal'];
+/* How long a plan may be. It was 18, which was the right number when an
+   object was one thing made of four or five parts — it stopped a model
+   from rambling and it cost nothing. It is the wrong number now that a
+   request can name a HOST AND A SUBSYSTEM: a car is eleven parts and a V12
+   is twelve, and the two together came back truncated at the join, so the
+   car got its engine's sump and nothing else. Truncation is silent, which
+   is what makes it worth a constant with a reason attached.
+
+   Still bounded, because the executor walks a robot to every step and a
+   sixty-step plan is a build nobody watches to the end. */
+export const MAX_STEPS = 44;
+
+export const ROOM_KEYS = ['software', 'cardboard', 'finished', 'metal', 'machining', 'electronics'];
 export { SHAPES, MATERIALS };
+export { SHAPE_ENUM } from './shapelib.js';
 
 /* ------------------------------------------------------------------ */
 /* schema handed to Ollama for hard structured output                  */
@@ -12,7 +38,7 @@ const PART_SCHEMA = {
   type: 'object',
   properties: {
     name: { type: 'string' },
-    shape: { type: 'string', enum: SHAPES },
+    shape: { type: 'string', enum: SHAPE_ENUM },
     material: { type: 'string', enum: MATERIALS },
     size: { type: 'array', items: { type: 'number' } },
     color: { type: 'string' },
@@ -37,9 +63,57 @@ const PART_SCHEMA = {
       },
       required: ['mode']
     },
-    rot: { type: 'array', items: { type: 'number' } }
+    rot: { type: 'array', items: { type: 'number' } },
+    // an electrical part: the shop already knows what one looks like, so
+    // shape and size are ignored when this is set
+    component: { type: 'string', enum: COMPONENT_IDS },
+    value: { type: 'number' },
+    // a part of an engine. Same rule as `component`: the shop sizes it from
+    // the engine spec, so shape and size given here are thrown away
+    engine_role: { type: 'string', enum: ENGINE_ROLES },
+    // a part that TURNS when the object is switched on — a wheel, a rotor,
+    // a propeller, a gear. The shop works out how fast and about which
+    // axis; this only says that it moves at all
+    moves: { type: 'string', enum: MOVERS }
   },
   required: ['name', 'shape', 'material', 'size']
+};
+
+const WIRE_SCHEMA = {
+  type: 'object',
+  properties: { from: { type: 'string' }, to: { type: 'string' } },
+  required: ['from', 'to']
+};
+
+/* The governing dimensions of an engine. Everything geometric about a
+   powerplant is derived from these, so this is the only thing the model
+   is asked for and every size it might volunteer is discarded. Loose on
+   purpose — the three kinds share one object and validateEngine keeps
+   only the fields that belong to the kind it was given. */
+const ENGINE_SCHEMA = {
+  type: 'object',
+  properties: {
+    kind: { type: 'string', enum: ENGINE_KINDS },
+    name: { type: 'string' },
+    /* piston */
+    layout: { type: 'string', enum: LAYOUT_IDS },
+    cylinders: { type: 'integer' },
+    bore: { type: 'number' }, stroke: { type: 'number' }, rod: { type: 'number' },
+    compressionHeight: { type: 'number' }, chamber: { type: 'number' },
+    compressionRatio: { type: 'number' },
+    vAngle: { type: 'number' }, redline: { type: 'number' },
+    fuel: { type: 'string', enum: ['petrol', 'diesel'] },
+    induction: { type: 'string', enum: ['na', 'supercharged', 'turbocharged'] },
+    /* gas turbine */
+    massFlow: { type: 'number' }, bypassRatio: { type: 'number' },
+    overallPressureRatio: { type: 'number' }, fanDiameter: { type: 'number' },
+    /* electric */
+    form: { type: 'string', enum: ['inrunner', 'outrunner'] },
+    statorOD: { type: 'number' }, statorID: { type: 'number' }, stackLength: { type: 'number' },
+    slots: { type: 'integer' }, poles: { type: 'integer' }, kv: { type: 'number' },
+    voltage: { type: 'number' }
+  },
+  required: ['kind']
 };
 
 export const PLAN_SCHEMA = {
@@ -60,7 +134,9 @@ export const PLAN_SCHEMA = {
         },
         required: ['room', 'action', 'say', 'seconds']
       }
-    }
+    },
+    wires: { type: 'array', items: WIRE_SCHEMA },
+    engine: ENGINE_SCHEMA
   },
   required: ['title', 'summary', 'steps']
 };
@@ -185,7 +261,7 @@ export function engineeringBlock(request, refs) {
   return technicalBlock(request, refs, d.domain);
 }
 
-export function buildMessages(request, recalled, refs) {
+export function buildMessages(request, recalled, refs, read) {
   const system = `You are the shop foreman for a four-room fabrication workshop. A cardboard robot named Rivet does the work with his hands. Your job is to turn a build request into an ordered list of shop steps.
 
 THE ROOMS
@@ -207,7 +283,9 @@ RULES
 7. The last step is in "finished", action "present".
 
 ${GEOMETRY_RULES}
-${referenceBlock(refs)}${engineeringBlock(request, refs)}${recalledBlock(recalled)}
+${shapeBlock()}
+${catalogBlock(request)}
+${referenceBlock(refs)}${engineeringBlock(request, refs)}${readingBlock(read)}${electricalBlock(request)}${engineBlock(request)}${recalledBlock(recalled)}
 SHAPE OF THE OUTPUT
 {"title":"...","summary":"one sentence","steps":[{"room":"metal","action":"weld","say":"Welding the legs on.","seconds":5,"part":{"name":"leg","shape":"rod","material":"metal","size":[0.12,0.7,0.12],"attach":{"to":0,"face":"bottom"},"array":{"mode":"quad","radius":0.42}}}]}`;
 
@@ -269,7 +347,16 @@ export const REVISE_SCHEMA = {
   required: ['verdict', 'reads_as', 'problems', 'parts']
 };
 
-export function buildCritiqueMessages(request, plan, issues, description, refs) {
+/* If this build is an engine, the inspector is told what it actually is —
+   the displacement, the compression ratio, the thrust — because those are
+   facts about the object it is being asked to judge and it has no way to
+   work them out from a list of cylinders. */
+function engineNote(plan) {
+  const said = describeEngine(plan);
+  return said ? `\nWHAT THE SHOP MEASURES THIS ENGINE AT\n${said.split('\n').map(l => `  ${l}`).join('\n')}\n` : '';
+}
+
+export function buildCritiqueMessages(request, plan, issues, description, refs, read) {
   const found = issues.length ? issues.map(s => `  · ${s}`).join('\n') : '  · none — the geometry is sound';
   const against = refs?.length
     ? `\nWHAT A REAL ONE HAS\nPublished designs for this, for comparison. If they all have a part and this build does not, that is a fault worth listing:\n${refs.slice(0, 8).map(r => `  · ${r.title}${r.tags?.length ? ` — ${r.tags.slice(0, 4).join(', ')}` : ''}`).join('\n')}\n`
@@ -282,6 +369,11 @@ export function buildCritiqueMessages(request, plan, issues, description, refs) 
   const expected = k
     ? `\nWHAT ONE OF THESE IS MADE OF\n${k.note}\nA real one has: ${k.parts.join(', ')}.\nA build missing the parts that define it fails, however tidy the geometry is.\n`
     : '';
+
+  /* The inspector gets what the pages said too. A part that every build
+     thread mentions and this build does not have is exactly the kind of
+     omission it is supposed to catch. */
+  const said = readingBlock(read);
 
   const system = `You are inspecting a build on the shop pedestal before Rivet starts cutting. Be blunt. Would someone who asked for this recognise it?
 
@@ -296,7 +388,7 @@ A build fails if it is a heap of primitives, if the features that identify the o
 
 GEOMETRY ALREADY CHECKED AUTOMATICALLY:
 ${found}
-${against}${expected}
+${against}${expected}${said}${engineNote(plan)}
 RULES
 1. Return ONLY a JSON object. No prose, no fences.
 2. "reads_as" is what this currently looks like to you, plainly. If it looks like nothing, say so.
@@ -304,6 +396,8 @@ RULES
 4. "problems" lists what is wrong, one short sentence each.
 5. "parts" is the CORRECTED full parts list — every part, not only the ones you changed. Keep "i" as the part's original index; to add a missing part give it the next unused index.
 ${GEOMETRY_RULES}
+${shapeBlock()}
+${catalogBlock(request)}
 6. If the verdict is "good", return the parts list unchanged.`;
 
   return [
@@ -340,7 +434,7 @@ function mergePart(base, p) {
   const size = Array.isArray(p.size) ? p.size : base.size;
   const out = {
     name: String(p.name || base.name || 'part').slice(0, 40),
-    shape: SHAPES.includes(String(p.shape).toLowerCase()) ? String(p.shape).toLowerCase() : base.shape,
+    shape: isShape(p.shape) ? String(p.shape).toLowerCase() : base.shape,
     material: MATERIALS.includes(String(p.material).toLowerCase()) ? String(p.material).toLowerCase() : base.material,
     size: [0, 1, 2].map(i => clamp(Number(size?.[i]) || 0.4, 0.15, 2.5)),
     color: base.color || null
@@ -476,11 +570,20 @@ export function validatePlan(p, fallbackTitle = 'Untitled build') {
       seconds: Math.max(1.5, Math.min(9, Number(s?.seconds) || 4))
     };
 
+    /* Who on the floor does this one. A step arriving without an owner is
+       normal — the offline planner and every bench edit produce them — and
+       crewplan.attributePlan fills those in from the material afterwards.
+       What is NOT allowed through is an owner who does not work here, which
+       would leave a step nobody is scheduled to perform and a build that
+       stops halfway with a robot standing still. */
+    const by = String(s?.by || '').toLowerCase();
+    if (ROLE_IDS.includes(by)) step.by = by;
+
     if (s?.part && room !== 'software') {
       const size = Array.isArray(s.part.size) ? s.part.size : [0.6, 0.4, 0.4];
       step.part = {
         name: String(s.part.name || 'part').slice(0, 40),
-        shape: SHAPES.includes(String(s.part.shape).toLowerCase()) ? String(s.part.shape).toLowerCase() : 'box',
+        shape: isShape(s.part.shape) ? String(s.part.shape).toLowerCase() : 'box',
         material: MATERIALS.includes(String(s.part.material).toLowerCase())
           ? String(s.part.material).toLowerCase()
           : (room === 'metal' ? 'metal' : 'cardboard'),
@@ -507,18 +610,91 @@ export function validatePlan(p, fallbackTitle = 'Untitled build') {
       if (rot && rot.length >= 3 && rot.slice(0, 3).every(v => Number.isFinite(Number(v)))) {
         step.part.rot = [0, 1, 2].map(i => (clamp(Number(rot[i]), -180, 180) * Math.PI) / 180);
       }
+      /* If the model called this a component, the shop knows what one
+         looks like — a resistor is a small barrel whatever the model said
+         its size was. Geometry is not the model's business here. */
+      const comp = String(s.part.component || '').toLowerCase();
+      if (isComponent(comp)) {
+        const body = bodyFor(comp, step.part);
+        step.part.component = comp;
+        step.part.shape = body.shape;
+        step.part.size = body.size;
+        step.part.material = body.material;
+        const def = COMPONENTS[comp].value;
+        const v = Number(s.part.value);
+        step.part.value = Number.isFinite(v) && v > 0 ? v : def;
+        if (!step.part.name) step.part.name = COMPONENTS[comp].label;
+      }
+      /* An engine part keeps its tag here and gets its body below, once
+         the engine spec itself has been clamped — the two have to be
+         resolved together or the geometry is derived from numbers that
+         were never checked. */
+      const role = String(s.part.engine_role || '').toLowerCase();
+      if (ENGINE_ROLES.includes(role)) step.part.engine_role = role;
+      /* Dropped here and a car's wheels are welded solid: the tag is the
+         only thing that says a part turns, and the validator rebuilds a
+         part from the fields it knows rather than copying it. */
+      const moves = String(s.part.moves || '').toLowerCase();
+      if (MOVERS.includes(moves)) step.part.moves = moves;
       partIndex++;
     }
     out.steps.push(step);
-    if (out.steps.length >= 18) break;
+    if (out.steps.length >= MAX_STEPS) break;
   }
   if (!out.steps.length) throw new Error('plan had no usable steps');
 
+  /* A wire is clamped exactly as hard as an attachment: it must name a
+     pin that exists on a part that is actually a component, and it may
+     not join a pin to itself. Everything else is dropped. The prompt is
+     guidance; this is the contract. */
+  const wires = validateWires(p?.wires, planParts(out));
+  if (wires.length) out.wires = wires;
+
+  /* An engine's geometry is not the model's business either. Given a
+     clamped spec, every tagged part is re-bodied from the sizing — the
+     same override as a component, for the same reason, and with more to
+     gain: a crankshaft the model sized has no relationship to the bore it
+     is supposed to serve, and nothing about that throws. */
+  const engine = validateEngine(p?.engine);
+  if (engine) {
+    out.engine = engine;
+    applyEngineBodies(out);
+  }
+
   const last = out.steps[out.steps.length - 1];
   if (last.room !== 'finished') {
-    out.steps.push({ room: 'finished', action: 'present', say: 'Done. Have a look.', seconds: 4 });
+    out.steps.push({ room: 'finished', action: 'present', say: 'Done. Have a look.', seconds: 4, by: 'foreman' });
   }
   return out;
+}
+
+/* Re-body every part that says which bit of the engine it is. Matched by
+   role and in order, so two cylinder banks take the two bank entries; a
+   role the sizing does not produce is left alone rather than dropped,
+   because a plan is allowed to have a stand or a mount in it. */
+export function applyEngineBodies(plan) {
+  if (!plan?.engine) return plan;
+  /* `fit` comes off the spec, so an engine that was dropped into a car
+     stays the size the car made room for. Re-bodying from scratch and
+     ignoring it is how a V12 in an engine bay came back out at full
+     pedestal size with the bonnet still where it was. */
+  const bodies = engineParts(sizeEngine(plan.engine), { fit: plan.engine.fit });
+  const used = new Set();
+  for (const step of plan.steps || []) {
+    const role = step.part?.engine_role;
+    if (!role) continue;
+    const j = bodies.findIndex((b, i) => b.engine_role === role && !used.has(i));
+    if (j < 0) continue;
+    used.add(j);
+    const b = bodies[j];
+    step.part.shape = b.shape;
+    step.part.size = b.size.slice();
+    step.part.material = b.material;
+    if (b.array) step.part.array = { ...b.array };
+    if (b.rot) step.part.rot = b.rot.map(d => (d * Math.PI) / 180);
+    if (!step.part.name || step.part.name === 'part') step.part.name = b.name;
+  }
+  return plan;
 }
 
 /* Every part spec in the plan, in the order the model numbered them. */
@@ -557,7 +733,7 @@ export function removePart(plan, index) {
   plan.steps.splice(target, 1);
   reindexAttachments(plan, to => (to === index ? null : to > index ? to - 1 : to));
   if (!plan.steps.some(s => s.room === 'finished')) {
-    plan.steps.push({ room: 'finished', action: 'present', say: 'Done. Have a look.', seconds: 4 });
+    plan.steps.push({ room: 'finished', action: 'present', say: 'Done. Have a look.', seconds: 4, by: 'foreman' });
   }
   return plan;
 }
@@ -578,15 +754,30 @@ export function addPart(plan, spec = {}) {
   const recipe = ROOM_FOR_MATERIAL[material] || ROOM_FOR_MATERIAL.metal;
   const part = {
     name: spec.name || 'new part',
-    shape: SHAPES.includes(spec.shape) ? spec.shape : 'box',
+    shape: isShape(spec.shape) ? String(spec.shape).toLowerCase() : 'box',
     material,
     size: (spec.size || [0.4, 0.4, 0.4]).map(v => clamp(Number(v) || 0.4, 0.15, 2.5)),
     color: null
   };
+  /* An electrical part added by hand or by the optimiser keeps its
+     identity, and takes its body from the catalogue like any other
+     component — otherwise a resistor dropped into a circuit arrives as a
+     400mm metal cube. */
+  const comp = String(spec.component || '').toLowerCase();
+  if (isComponent(comp)) {
+    const body = bodyFor(comp);
+    part.component = comp;
+    part.shape = body.shape; part.size = body.size; part.material = body.material;
+    part.value = Number.isFinite(Number(spec.value)) ? Number(spec.value) : COMPONENTS[comp].value;
+  }
   const existing = planParts(plan).length;
   if (existing > 0) part.attach = { to: existing - 1, face: 'top' };
 
-  const step = { room: recipe.room, action: recipe.action, say: recipe.say, seconds: 4, part };
+  /* A part added by hand or by the optimiser still belongs to somebody —
+     an unowned step is one no robot is scheduled to walk to. */
+  const step = part.component
+    ? { room: 'electronics', action: 'solder', say: `Soldering the ${part.name} in.`, seconds: 4, by: 'electrical', part }
+    : { room: recipe.room, action: recipe.action, say: recipe.say, seconds: 4, by: roleForMaterial(material), part };
   // in front of the last finished-room step, so he still ends by presenting
   let at = plan.steps.length;
   for (let i = plan.steps.length - 1; i >= 0; i--) {
@@ -605,7 +796,7 @@ export function editPart(plan, index, patch) {
   if (!p) return plan;
 
   if (patch.name !== undefined) p.name = String(patch.name).slice(0, 40) || 'part';
-  if (patch.shape !== undefined && SHAPES.includes(patch.shape)) p.shape = patch.shape;
+  if (patch.shape !== undefined && isShape(patch.shape)) p.shape = String(patch.shape).toLowerCase();
   if (patch.material !== undefined && MATERIALS.includes(patch.material)) p.material = patch.material;
 
   for (const [k, ax] of [['sx', 0], ['sy', 1], ['sz', 2]]) {
@@ -723,22 +914,124 @@ const GENERIC = [
 /* An offline build is only crude because there is no model to ask. If Rivet
    has already learned this class of object, the recipe he learned is better
    than any keyword table, so it wins. */
+/* With no engine reachable, a circuit request still has to come out as a
+   working circuit rather than a heap of boxes — which means the offline
+   builder has to know the loop, not just the parts. These are wired
+   correctly by construction: supply → switch → resistor → load → back. */
+function offlineCircuit(request) {
+  const r = String(request || '').toLowerCase();
+  const load = /motor|fan|pump/.test(r) ? 'motor'
+    : /buzz|alarm|siren|sound/.test(r) ? 'buzzer'
+      : /lamp|bulb/.test(r) ? 'lamp' : 'led';
+  const supply = /12v|supply|mains|bench/.test(r) ? 'supply' : /1\.5|aa|aaa|cell/.test(r) ? 'cell' : 'battery';
+  const volts = { supply: 12, cell: 1.5, battery: 9 }[supply];
+  const wantSwitch = !/\bno switch\b/.test(r);
+
+  // the resistor that actually suits this supply and this load
+  const drop = load === 'led' ? 2 : 0;
+  const ohms = load === 'led' ? Math.max(47, Math.round((volts - drop) / 0.015 / 10) * 10) : 0;
+
+  const parts = [
+    { name: 'board', component: 'board' },
+    { name: supply, component: supply, value: volts, attach: { to: 0, face: 'top', dx: -0.28 } }
+  ];
+  if (wantSwitch) parts.push({ name: 'switch', component: 'switch', attach: { to: 0, face: 'top', dx: 0.02 } });
+  if (ohms) parts.push({ name: `${ohms}Ω`, component: 'resistor', value: ohms, attach: { to: 0, face: 'top', dx: 0.24 } });
+  parts.push({ name: load, component: load, attach: { to: 0, face: 'top', dz: 0.2 } });
+
+  /* Out of the supply's + pin, in and out of everything in turn, and back
+     into its - pin. The supply is NOT one of the links in the chain — put
+     it in the middle of the walk and both its terminals end up on the
+     same net, which is a dead short and exactly the fault this planner
+     exists to not commit. */
+  const outPin = i => COMPONENTS[parts[i].component].pins[0];
+  const inPin = i => COMPONENTS[parts[i].component].pins.at(-1);
+  const loop = parts.map((_, i) => i).filter(i => i !== 0 && i !== 1);   // not the board, not the supply
+
+  const wires = [];
+  if (!loop.length) return { parts, wires, load, supply };
+  wires.push({ from: '1.+', to: `${loop[0]}.${outPin(loop[0])}` });
+  for (let k = 0; k < loop.length - 1; k++) {
+    wires.push({ from: `${loop[k]}.${inPin(loop[k])}`, to: `${loop[k + 1]}.${outPin(loop[k + 1])}` });
+  }
+  wires.push({ from: `${loop.at(-1)}.${inPin(loop.at(-1))}`, to: '1.-' });
+
+  return { parts, wires, load, supply };
+}
+
 export function offlinePlan(request, recalled) {
-  const learned = recalled?.skill?.recipe?.parts?.length ? recalled.skill.recipe.parts : null;
+  const memory = recalled?.skill?.recipe?.parts?.length ? recalled.skill.recipe.parts : null;
+  /* A recalled recipe outranks everything else here — except on an engine.
+     Recall scores on keyword overlap, and "engine" is a keyword on half the
+     things with a motor in them, so a turbofan request would pull back a
+     three-part rover and build that instead. A recipe may only answer an
+     engine request if it actually holds engine parts; otherwise the
+     arithmetic wins, exactly as the catalogue wins over the model. */
+  const wantsEngine = ENGINE_RE.test(request);
+  const learned = memory && wantsEngine && !memory.some(p => p.engine_role) ? null : memory;
   /* With no engine and nothing recalled, an engineering request would fall
      through to the generic box stack — the one case where the offline
      planner was genuinely useless. The domain vocabulary is a far better
      starting point than three boxes. */
   const d = learned ? null : classifyRequest(request);
-  const engineered = d?.engineering ? domainParts(d.domain) : null;
-  const hint = learned ? { parts: learned, metal: true }
+  /* A circuit is built as a circuit, not as a stack of shapes with
+     electrical names — the loop has to close or the whole thing is
+     decoration. */
+  const circuit = d?.domain === 'electronics' ? offlineCircuit(request) : null;
+  /* An engine is built as an engine, for exactly the reason a circuit is
+     built as a circuit: the domain vocabulary would give it the right ten
+     part NAMES at ten default sizes, and an engine whose crankshaft has no
+     relationship to its bore is not an engine. Ahead of domainParts, so a
+     propulsion request that names a real architecture gets the real one. */
+  const engineSpec = !circuit && !learned && wantsEngine ? specFromRequest(request) : null;
+
+  /* THE HOST. A request usually names an object the shop has a full parts
+     list for — a car, a crane, a speaker — and that list is far better
+     than anything the domain vocabulary or a keyword archetype produces.
+     Looked up before the engine branch, because "a car with a V12" is a
+     CAR that has an engine in it, and the old order built the engine and
+     called it done. */
+  const host = !learned && !circuit ? matchArchetype(request) : null;
+  const engineered = !circuit && !engineSpec && !host && d?.engineering ? domainParts(d.domain) : null;
+
+  let hint = learned ? { parts: learned, metal: true }
+    : circuit ? { parts: circuit.parts, metal: true }
+    : host ? { parts: partsOf(host), metal: true }
+    : engineSpec ? { parts: engineParts(sizeEngine(engineSpec)), metal: true }
     : engineered ? { parts: engineered, metal: true }
     : (HINTS.find(h => h.re.test(request)) || { parts: GENERIC, metal: true });
+
+  /* AND THE SUBSYSTEM. An engine that was asked for alongside a host goes
+     INTO the host at the mount the host keeps for one, scaled to the room
+     there is — rather than replacing it. `fit` is stored on the spec so
+     every later trip through validatePlan re-bodies it at the size the
+     host made room for instead of blowing it back up to a whole pedestal.
+
+     A host with no engine mount keeps the engine as the object: asking for
+     "a bookshelf with a V8" is a strange request, and building the V8 is a
+     better answer than hiding it inside a bookshelf. */
+  let engine = engineSpec;
+  if (host && wantsEngine && !circuit) {
+    const mount = host.mounts?.engine;
+    const spec = engineSpec || specFromRequest(request);
+    if (mount && spec) {
+      const whole = engineParts(sizeEngine(spec));
+      const fit = fitFactor(whole, mount.span);
+      engine = { ...spec, fit };
+      hint = { parts: compose(hint.parts, engineParts(sizeEngine(spec), { fit }), mount).parts, metal: true };
+    } else if (!mount && spec) {
+      hint = { parts: engineParts(sizeEngine(spec)), metal: true };
+      engine = spec;
+    }
+  }
   const title = request.trim().replace(/^(build|make|design|create)\s+(me\s+)?(an?\s+)?/i, '').slice(0, 60) || 'Shop build';
 
   const parts = hint.parts.map(p => ({
     name: p.role || p.name || p.shape,
     shape: p.shape, material: p.material,
+    ...(p.component ? { component: p.component, value: p.value } : {}),
+    ...(p.engine_role ? { engine_role: p.engine_role } : {}),
+    ...(p.moves ? { moves: p.moves } : {}),
     size: (p.size || [0.5, 0.5, 0.5]).slice(),
     attach: p.attach ? { ...p.attach } : undefined,
     array: p.array ? { ...p.array } : undefined,
@@ -748,7 +1041,11 @@ export function offlinePlan(request, recalled) {
   const MAKE = {
     cardboard: [['cut_scissors', 'Cutting %s out of board.'], ['score_fold', 'Creasing %s.'], ['glue', 'Gluing %s up.']],
     metal: [['saw_metal', 'Cutting %s to length.'], ['weld', 'Welding %s.'], ['bend_metal', 'Bending %s.'], ['drill', 'Drilling %s.']],
-    finished: [['assemble', 'Fitting %s.'], ['sand', 'Cleaning %s up.']]
+    machining: [['lathe_turn', 'Turning %s.'], ['mill_cut', 'Milling %s.'], ['bore_cylinder', 'Boring %s.'],
+      ['press_fit', 'Pressing %s in.'], ['balance_crank', 'Balancing %s.']],
+    finished: [['assemble', 'Fitting %s.'], ['sand', 'Cleaning %s up.']],
+    electronics: [['breadboard', 'Pushing %s into the board.'], ['solder', 'Soldering %s in.'],
+      ['strip_wire', 'Stripping the leads for %s.'], ['crimp', 'Crimping %s on.']]
   };
 
   const steps = [
@@ -760,11 +1057,32 @@ export function offlinePlan(request, recalled) {
   ];
 
   parts.forEach((part, i) => {
-    const room = part.material === 'cardboard' ? 'cardboard' : (part.material === 'wood' || part.material === 'plastic' ? 'finished' : 'metal');
+    /* Which bench a part is made at. Separate from roleForMaterial on
+       purpose — this is the offline planner's own routing and a material
+       missing from here is silently made in the wrong bay. */
+    const room = part.component ? 'electronics'
+      : part.engine_role ? 'machining'
+        : part.material === 'cardboard' ? 'cardboard'
+          : part.material === 'alloy' ? 'machining'
+            : (part.material === 'wood' || part.material === 'plastic' ? 'finished' : 'metal');
     const menu = MAKE[room] || MAKE.metal;
     const [action, line] = menu[i % menu.length];
     steps.push({ room, action, say: line.replace('%s', 'the ' + part.name).slice(0, 88), seconds: 4 + (i % 3), part });
   });
+
+  if (engine) {
+    steps.push(
+      { room: 'machining', action: 'dial_gauge', say: 'Checking every clearance.', seconds: 4 },
+      { room: 'machining', action: 'time_engine', say: 'Timing it up.', seconds: 4 }
+    );
+  }
+
+  if (circuit) {
+    steps.push(
+      { room: 'electronics', action: 'meter_test', say: 'Checking it round with the meter.', seconds: 4 },
+      { room: 'electronics', action: 'power_up', say: 'Switching it on.', seconds: 3 }
+    );
+  }
 
   steps.push(
     { room: 'finished', action: 'assemble', say: 'Fitting it all together.', seconds: 5 },
@@ -777,7 +1095,17 @@ export function offlinePlan(request, recalled) {
     title,
     summary: learned
       ? `Built offline from the recipe Rivet learned for ${recalled.skill.name}.`
-      : 'Planned offline from keyword heuristics — no model was reachable.',
-    steps
+      : host && engine
+        ? `A ${host.label} with ${describeEngine({ engine }).split('\n')[0]} in it. Both built offline from the shop's own numbers.`
+      : host
+        ? `A ${host.label}, built offline from the parts one is actually made of.`
+      : engine
+        ? `${describeEngine({ engine }).split('\n')[0]}. Sized offline from the shop's own numbers.`
+      : circuit
+        ? `A ${circuit.supply} feeding a ${circuit.load}, wired as a loop. Planned offline — no model was reachable.`
+        : 'Planned offline from keyword heuristics — no model was reachable.',
+    steps,
+    ...(circuit ? { wires: circuit.wires } : {}),
+    ...(engine ? { engine } : {})
   };
 }

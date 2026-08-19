@@ -68,8 +68,22 @@ function nothingFloats(solved, label) {
     if (inst.fixed) continue;                 // held by its parent's side face
     const b = bottom(inst);
     if (b <= 0.09) continue;                  // on the pedestal
-    const held = solved.instances.some(o => o !== inst && Math.abs(top(o) - b) < 0.12 &&
+    /* Something under it, top to bottom — a leg, a plinth, the part below
+       it in a stack. */
+    const stacked = solved.instances.some(o => o !== inst && Math.abs(top(o) - b) < 0.12 &&
       ov(inst, o, 0) > 0.001 && ov(inst, o, 2) > 0.001);
+    /* Or something OF ITS OWN that straddles it and reaches the ground: a
+       crate's floor is held by walls that pass it on both sides, a car's
+       chassis by wheels hung off its ends. Those are not floating parts,
+       they are parts that are carried — and demanding a top-to-bottom
+       contact under them would mean a crate has to sit on its own floor.
+
+       No overlap test on this one: a face places a child ALONGSIDE its
+       parent rather than through it, so a wheel on the end of a chassis
+       overlaps it in exactly nothing. Being its part and reaching past its
+       bottom is the whole claim. */
+    const straddled = solved.instances.some(o => o !== inst && o.parent === inst.i && bottom(o) < b - 0.01);
+    const held = stacked || straddled;
     assert(held, `${label}: "${inst.name}" floats at y=${b.toFixed(2)} with nothing under it`);
   }
 }

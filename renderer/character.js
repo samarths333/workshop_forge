@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { cardboardTex, fluteEdgeTex, faceTex } from './textures.js';
+import { cardboardTex, fluteEdgeTex, faceTex, nameTex } from './textures.js';
 import { makeProp, makeHeadgear } from './props.js';
 import { CLIP_BY_ID, evalClip, lerpPose, BASE_POSE, JOINTS } from './animations.js';
 
@@ -12,13 +12,27 @@ const QQ = new THREE.Quaternion(), QW = new THREE.Quaternion(), QP = new THREE.Q
 
 const ARM_REACH = 0.95;          // shoulder to tool tip, fully extended
 
+/* One of these is a robot. There used to be exactly one, called Rivet, and
+   the class was written as if there always would be — the body texture, the
+   antenna colour and the name were all constants inside it.
+
+   There are five now, and they have to be told apart from across a 70-metre
+   shop while they are all moving. Three things do that work, in the order
+   they read at distance: the colour of the antenna bulb (visible even when
+   the robot is behind a bench), the tint of the cardboard body, and the name
+   plate on its chest. The rig, the clips and the reach solver are identical
+   for all of them — a specialist is a different job, not a different body. */
 export class Rivet {
-  constructor(scene) {
+  constructor(scene, opts = {}) {
     this.scene = scene;
+    this.role = opts.role || null;
+    this.name = opts.name || 'Rivet';
+    this.trade = opts.trade || '';
+    this.accent = opts.accent ?? 0xff5a1a;
     this.root = new THREE.Group();
     scene.add(this.root);
 
-    const body = cardboardTex(1);
+    const body = cardboardTex(1, opts.tint || '#c69a63');
     const edge = fluteEdgeTex(2);
     this.matBody = new THREE.MeshStandardMaterial({ map: body, roughness: 0.94 });
     this.matEdge = new THREE.MeshStandardMaterial({ map: edge, roughness: 0.98 });
@@ -146,9 +160,12 @@ export class Rivet {
 
     const torso = this.joint('torso', hips, 0, 0.13, 0);
     this.seg(0.62, 0.66, 0.36, torso, 0.33);
-    // chest badge
-    const badge = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.02), this.matEdge);
-    badge.position.set(0, 0.42, 0.19); torso.add(badge);
+    /* chest plate — who this one is, readable from the walkway */
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.21, 0.02),
+      [this.matEdge, this.matEdge, this.matEdge, this.matEdge,
+       new THREE.MeshStandardMaterial({ map: nameTex(this.name, this.trade), roughness: 0.9 }),
+       this.matEdge]);
+    plate.position.set(0, 0.42, 0.19); torso.add(plate);
 
     const head = this.joint('head', torso, 0, 0.78, 0);
     const hm = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5),
@@ -159,8 +176,11 @@ export class Rivet {
     // antenna
     const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.26, 6), this.matEdge);
     ant.position.y = 0.58; head.add(ant);
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8),
-      new THREE.MeshStandardMaterial({ color: 0xff7a3d, emissive: 0xff5a1a, emissiveIntensity: 1.4 }));
+    /* the antenna bulb is this robot's trade colour, and it is the thing you
+       actually track across the shop — a body tint disappears the moment
+       something is between you and it, a light does not */
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8),
+      new THREE.MeshStandardMaterial({ color: this.accent, emissive: this.accent, emissiveIntensity: 1.6 }));
     bulb.position.y = 0.72; head.add(bulb);
     this.bulb = bulb;
     this.gearSlot = new THREE.Group(); head.add(this.gearSlot);
@@ -205,6 +225,7 @@ export class Rivet {
   }
 
   emit(n, origin, kind) {
+    this.live = (this.live || 0) + n;
     for (let i = 0; i < this.N && n > 0; i++) {
       const p = this.parts[i];
       if (p.life > 0) continue;
@@ -241,10 +262,23 @@ export class Rivet {
   }
 
   stepFx(dt) {
+    /* Five robots means five of these, and four of them are usually standing
+       still. Walking 260 particles that are all dead, every frame, five times
+       over, is pure waste — so a system with nothing alive in it and nothing
+       being emitted into it is skipped entirely. The `dirty` flag is what
+       stops the last frame of a dying system being left on screen. */
+    if (!this.live && !this.clip.fx) {
+      if (this.fxDirty) { this.fx.visible = false; this.fxDirty = false; }
+      return;
+    }
+    this.fx.visible = true;
+    this.fxDirty = true;
+    this.live = 0;
     const arr = this.fx.geometry.attributes.position.array;
     for (let i = 0; i < this.N; i++) {
       const p = this.parts[i];
       if (p.life > 0) {
+        this.live++;
         p.life -= dt;
         p.v.y += (p.g || -9) * dt;
         p.p.addScaledVector(p.v, dt);
@@ -360,4 +394,14 @@ export class Rivet {
   }
 
   get pos() { return this.root.position; }
+
+  /* Everything this robot put in the scene, back out again. Two groups, and
+     the particle system is the one that is easy to forget — leave it behind
+     and a shift change leaks 260 points per robot per rebuild. */
+  dispose() {
+    this.scene.remove(this.root);
+    this.scene.remove(this.fx);
+    this.fx.geometry.dispose();
+    this.fxMat.dispose();
+  }
 }

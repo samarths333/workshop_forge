@@ -1,16 +1,59 @@
 import * as THREE from 'three';
 import { cardboardTex, fluteEdgeTex, metalTex, concreteTex, rackTex, galleryTex, signTex, woodTex } from './textures.js';
 import { partGeometry, chamferBox, partMaterial as makePartMaterial } from './shapes.js';
+import { pinOffset, COMPONENTS, isComponent } from './circuit.js';
+import { STATION_X, BAY_PITCH } from './roles.js';
+import { pistonPhase } from './engine.js';
 
-export const ROOM_W = 20, ROOM_D = 18, WALL_H = 6.4, PITCH = 22;
+/* ONE BAY, SIX STATIONS.
+
+   This used to be five rooms with walls between them and a 22-metre pitch,
+   and one robot who walked the length of it all day. It is now a single
+   open shop: one slab, one roof, one long back wall, and five worked areas
+   painted onto the floor with nothing between them.
+
+   Two things drove the layout. The assembly bay is in the MIDDLE, because
+   every part made anywhere on the floor ends up there and putting it at one
+   end doubled every haul. And the two heavy fabrication stations — metal and
+   light materials — sit either side of it, with the two that produce little
+   or no physical work (the spec desk and the electronics bench) out at the
+   ends where the traffic is lightest.
+
+   ROOM_W / ROOM_D are now the size of a STATION'S FOOTPRINT rather than of a
+   room, and they are what the floor paint is cut to. The hall itself is
+   measured off the stations in bayExtent(). */
+export const ROOM_W = 20, ROOM_D = 18, WALL_H = 6.4;
+/* Where the stations are is the crew's business, not the scenery's — the
+   optimiser prices walks off the same table and it cannot see this file. */
+export const PITCH = BAY_PITCH;
 
 export const ROOMS = {
-  software:  { key: 'software',  x: -PITCH * 1.5, label: 'SOFTWARE',   sub: 'the spec',    accent: 0x5ec8ff, bench: [-PITCH * 1.5 + 0.4, -4.2] },
-  cardboard: { key: 'cardboard', x: -PITCH * 0.5, label: 'CARDBOARD',  sub: 'the mock-up', accent: 0xffa94d, bench: [-PITCH * 0.5, -4.0] },
-  finished:  { key: 'finished',  x:  PITCH * 0.5, label: 'FINISHED',   sub: 'the real one',accent: 0xffe9c2, bench: [ PITCH * 0.5, -3.4] },
-  metal:     { key: 'metal',     x:  PITCH * 1.5, label: 'METAL',      sub: 'the hard way',accent: 0xff8a3c, bench: [ PITCH * 1.5, -4.0] }
+  software:  { key: 'software',  x: STATION_X.software, label: 'SOFTWARE',   sub: 'the spec',    accent: 0x5ec8ff, bench: [STATION_X.software + 0.4, -4.2] },
+  metal:     { key: 'metal',     x: STATION_X.metal,    label: 'METAL',      sub: 'the hard way',accent: 0xff8a3c, bench: [STATION_X.metal, -4.0] },
+  /* Dead centre. Everything the floor makes is carried here, so it is the
+     one station nobody has to cross the shop to reach. */
+  finished:  { key: 'finished',  x: STATION_X.finished, label: 'ASSEMBLY', sub: 'the real one',accent: 0xffe9c2, bench: [STATION_X.finished, -3.4] },
+  cardboard: { key: 'cardboard', x: STATION_X.cardboard, label: 'LIGHT',    sub: 'board & ply', accent: 0xffa94d, bench: [STATION_X.cardboard, -4.0] },
+  /* The bench station. Everything here happens inside a 200mm square, so
+     it is lit differently from the rest of the shop — one hard task lamp
+     over the mat rather than the big bay lights, because that is what an
+     electronics bench actually looks like. */
+  electronics: { key: 'electronics', x: STATION_X.electronics, label: 'ELECTRONICS', sub: 'the clever bit', accent: 0x6ee7a8, bench: [STATION_X.electronics - 0.3, -4.1] },
+  /* The far end of the shop. Nothing in here is hit or bent — it is cut to
+     a number and then measured, which is why it is lit flat and cold while
+     the metal bay two doors down is lit like a fire. */
+  machining: { key: 'machining', x: STATION_X.machining, label: 'MACHINE SHOP', sub: 'to a thou', accent: 0x9fb4c9, bench: [STATION_X.machining, -4.2] }
 };
-export const ROOM_ORDER = ['software', 'cardboard', 'finished', 'metal'];
+/* Left to right across the floor, which is also the order the overhead
+   signs read in and the order the station buttons are drawn in. */
+export const ROOM_ORDER = ['software', 'metal', 'finished', 'cardboard', 'electronics', 'machining'];
+
+/* How far the hall runs, worked out from the stations rather than typed in
+   twice — moving a station used to leave it standing outside the building. */
+export function bayExtent() {
+  const xs = Object.values(ROOMS).map(r => r.x);
+  return { min: Math.min(...xs) - ROOM_W * 0.62, max: Math.max(...xs) + ROOM_W * 0.62 };
+}
 
 /* How each action deforms the material in front of Rivet. Anything not listed
    gets 'handle' — the piece is turned over and looked at, not changed. */
@@ -23,7 +66,13 @@ export const ACTION_FAMILY = {
   drill: 'hole', punch_hole: 'hole',
   weld: 'join', braze: 'join', glue: 'join', tape: 'join',
   rivet: 'join', assemble: 'join', screwdriver: 'join', wrench_tighten: 'join',
-  quench: 'cool'
+  quench: 'cool',
+  /* Soldering does not remove material or bend it — it puts a bead on and
+     the piece is otherwise untouched, which is 'join' with a smaller
+     bead. Stripping takes the end off a wire, so it cuts. */
+  solder: 'join', crimp: 'join', breadboard: 'join',
+  strip_wire: 'cut',
+  meter_test: 'handle', power_up: 'handle'
 };
 
 /* Top surface of the centre display pedestal in the Finished room — the origin
@@ -38,7 +87,8 @@ const STAGE_SPACING = 0.62, STAGE_TOP = 0.92;
 const STOCK = {
   cardboard: { shape: 'panel', material: 'cardboard', size: [1.1, 0.5, 0.8] },
   metal:     { shape: 'rod',   material: 'metal',     size: [0.5, 1.3, 0.5] },
-  finished:  { shape: 'box',   material: 'painted',   size: [0.7, 0.5, 0.5] }
+  finished:  { shape: 'box',   material: 'painted',   size: [0.7, 0.5, 0.5] },
+  electronics: { shape: 'panel', material: 'plastic',  size: [0.8, 0.06, 0.55] }
 };
 
 const std = (o) => new THREE.MeshStandardMaterial(o);
@@ -63,14 +113,24 @@ export class World {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x08070a);
-    this.scene.fog = new THREE.Fog(0x08070a, 34, 92);
+    /* The fog used to start at 34 metres, which was past the far wall of a
+       single room. In one 75-metre hall it swallowed three stations. */
+    this.scene.fog = new THREE.Fog(0x08070a, 62, 190);
 
-    this.camera = new THREE.PerspectiveCamera(46, 16 / 9, 0.1, 400);
-    this.camTarget = new THREE.Vector3(ROOMS.cardboard.x, 1.4, 0);
-    this.camPos = new THREE.Vector3(ROOMS.cardboard.x, 5.2, 15);
-    this.camOrbit = { yaw: 0, pitch: 0.16, dist: 15, free: false };
+    /* Opens on the assembly bay, far enough back to see most of the floor.
+       A shop with six robots working at once is only legible from a
+       distance — framed at 15 metres you are looking at one bench and the
+       other five trades are off-screen doing the interesting part. */
+    this.camera = new THREE.PerspectiveCamera(50, 16 / 9, 0.1, 400);
+    this.camTarget = new THREE.Vector3(ROOMS.finished.x, 1.4, 0);
+    this.camPos = new THREE.Vector3(ROOMS.finished.x, 7.5, 24);
+    this.camOrbit = { yaw: 0, pitch: 0.2, dist: 24, free: false };
+    this.focusX = ROOMS.finished.x;
 
-    this.scene.add(new THREE.HemisphereLight(0x9fb4c8, 0x2a1d12, 0.34));
+    /* Up from 0.34: with the walls down there is nothing bouncing light
+       back into the far ends of the shop, and a bench you cannot see is a
+       bench that might as well not be staffed. */
+    this.scene.add(new THREE.HemisphereLight(0x9fb4c8, 0x2a1d12, 0.5));
     const key = new THREE.DirectionalLight(0xfff0dc, 0.55);
     key.position.set(18, 30, 24);
     key.castShadow = true;
@@ -101,6 +161,11 @@ export class World {
     this.workpieces = [];
     this.staged = { cardboard: [], metal: [], finished: [], software: [] };
 
+    /* The wiring the current build wants, kept here so a re-solve from the
+       bench can re-run it — the parts move, and a wire left where it was
+       hangs in the air. */
+    this.pendingWires = null;
+    this.wireGroup = null;
     this.buildRooms();
     this.buildStagingRacks();
     this.blinkers = [];
@@ -165,49 +230,210 @@ export class World {
     return g;
   }
 
+  /* A station, not a room. What used to raise four walls and a ceiling now
+     paints an area of the shared slab in that trade's floor material and
+     draws the hazard line around it. The trades can see each other work and
+     walk straight between benches, which is the entire point of knocking the
+     walls down; keeping the floor materials is what stops the result reading
+     as one undifferentiated warehouse.
+
+     Signature is unchanged so every buildX() still calls it the same way —
+     `wallMat` now goes into the low kick rail at the back of the station and
+     `ceilTone` into the light rig over it. */
   shell(room, floorMat, wallMat, ceilTone) {
     const g = new THREE.Group();
     const cx = room.x;
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W, ROOM_D), floorMat);
-    floor.rotation.x = -Math.PI / 2; floor.position.set(cx, 0, 0); floor.receiveShadow = true;
+
+    /* the painted bay, a few millimetres proud of the slab so it does not
+       z-fight with it */
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W - 1.2, ROOM_D - 1.4), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(cx, 0.006, -0.4);
+    floor.receiveShadow = true;
     g.add(floor);
 
-    // back wall
-    g.add(box(ROOM_W, WALL_H, 0.4, wallMat, cx, WALL_H / 2, -ROOM_D / 2));
-    // side walls with a doorway gap
-    for (const sx of [-1, 1]) {
-      const wx = cx + sx * ROOM_W / 2;
-      g.add(box(0.4, WALL_H, 5.6, wallMat, wx, WALL_H / 2, -ROOM_D / 2 + 2.8));
-      g.add(box(0.4, WALL_H, 5.6, wallMat, wx, WALL_H / 2, ROOM_D / 2 - 2.8));
-      g.add(box(0.4, 1.9, 6.8, wallMat, wx, WALL_H - 0.95, 0));
+    /* the yellow line around a working area, in the trade's own accent so
+       you can tell whose floor you are standing on from across the shop */
+    const paint = std({ color: room.accent, roughness: 0.95, emissive: room.accent, emissiveIntensity: 0.12 });
+    const W = ROOM_W - 1.2, D = ROOM_D - 1.4;
+    for (const dz of [-D / 2, D / 2]) g.add(box(W, 0.012, 0.16, paint, cx, 0.01, -0.4 + dz));
+    for (const dx of [-W / 2, W / 2]) g.add(box(0.16, 0.012, D, paint, cx + dx, 0.01, -0.4));
+
+    /* a kick rail and a tool board along the back of the station — what is
+       left of the old back wall, and what keeps each bench feeling enclosed
+       without putting anything between the trades */
+    g.add(box(ROOM_W - 2.4, 1.5, 0.35, wallMat, cx, 0.75, -ROOM_D / 2 + 0.6));
+    g.add(box(ROOM_W - 3.6, 2.4, 0.12, wallMat, cx, 2.9, -ROOM_D / 2 + 0.75));
+
+    /* the light rig: one truss over the station carrying two strips */
+    const rig = std({ color: 0x2a2c30, roughness: 0.7, metalness: 0.5 });
+    g.add(box(ROOM_W - 2, 0.22, 0.22, rig, cx, WALL_H - 0.5, -3.4));
+    g.add(box(ROOM_W - 2, 0.22, 0.22, rig, cx, WALL_H - 0.5, 1.6));
+    const tube = std({ color: ceilTone, emissive: ceilTone, emissiveIntensity: 0.8, roughness: 0.4 });
+    for (const z of [-3.4, 1.6]) {
+      for (const dx of [-4.2, 4.2]) g.add(box(5.2, 0.12, 0.42, tube, cx + dx, WALL_H - 0.68, z));
     }
-    // ceiling + slats (the "looking into a box" framing)
-    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(ROOM_W, ROOM_D),
-      std({ color: ceilTone, roughness: 1, side: THREE.DoubleSide }));
-    ceil.rotation.x = Math.PI / 2; ceil.position.set(cx, WALL_H, 0);
-    g.add(ceil);
-    const slat = std({ color: ceilTone, roughness: 1 });
-    for (let z = -7; z <= 7; z += 3.5) g.add(box(ROOM_W, 0.22, 0.3, slat, cx, WALL_H - 0.14, z));
 
     this.scene.add(g);
     return g;
   }
 
+  /* ------------------------------------------------------------- */
+  /* the building the stations stand in                             */
+  /* ------------------------------------------------------------- */
+  /* One slab, one roof, one back wall the length of the shop. Built before
+     the stations so their floor paint lands on top of it. */
+  buildBay() {
+    const { min, max } = bayExtent();
+    const W = max - min, cx = (min + max) / 2, D = ROOM_D + 6;
+    /* The roof sits well above the light rigs. It used to be at WALL_H+1.6,
+       which put it below the camera on the wide shot — you ended up looking
+       down THROUGH the deck at a black slab. */
+    const ROOF = WALL_H + 4.4;
+
+    const slab = new THREE.Mesh(new THREE.PlaneGeometry(W, D),
+      std({ map: this.tex.concrete, roughness: 0.92 }));
+    slab.rotation.x = -Math.PI / 2;
+    slab.position.set(cx, 0, -0.4);
+    slab.receiveShadow = true;
+    this.scene.add(slab);
+
+    /* the walkway down the middle of the shop, in front of every bench.
+       It is the route the foreman actually walks, and painting it is what
+       makes the floor read as one shop rather than five islands. */
+    const lane = std({ color: 0xd8c37a, roughness: 1, transparent: true, opacity: 0.5 });
+    this.scene.add(box(W - 2, 0.014, 0.14, lane, cx, 0.012, 3.5));
+    this.scene.add(box(W - 2, 0.014, 0.14, lane, cx, 0.012, 5.3));
+
+    const wallMat = std({ map: this.tex.metalWall, roughness: 0.9 });
+    // back wall, unbroken, the whole length
+    this.scene.add(box(W, ROOF, 0.5, wallMat, cx, ROOF / 2, -ROOM_D / 2 - 0.25));
+    // the two ends
+    for (const ex of [min, max]) {
+      this.scene.add(box(0.5, ROOF, D, wallMat, ex, ROOF / 2, -0.4));
+    }
+    /* clerestory strip along the back, up under the roof — the thing that
+       makes a shed read as a shed rather than as a corridor */
+    const glass = std({ color: 0x38424e, emissive: 0x5b6f84, emissiveIntensity: 0.5, roughness: 0.35 });
+    this.scene.add(box(W - 4, 1.5, 0.2, glass, cx, ROOF - 1.5, -ROOM_D / 2 - 0.05));
+
+    /* roof: a deck high enough that the light rigs hang under it, on trusses
+       running front to back every four metres */
+    const deck = new THREE.Mesh(new THREE.PlaneGeometry(W, D),
+      std({ color: 0x1a1b1f, roughness: 1, side: THREE.DoubleSide }));
+    deck.rotation.x = Math.PI / 2;
+    deck.position.set(cx, ROOF, -0.4);
+    this.scene.add(deck);
+
+    const truss = std({ color: 0x33363c, roughness: 0.75, metalness: 0.35 });
+    for (let x = min + 2; x < max; x += 4) {
+      this.scene.add(box(0.3, 0.6, D, truss, x, ROOF - 0.35, -0.4));
+      // and a stub column down the back so the roof has something holding it
+      this.scene.add(box(0.34, ROOF - 0.6, 0.34, truss, x, (ROOF - 0.6) / 2, -ROOM_D / 2 + 0.2));
+    }
+    /* three purlins running the length of the shop, which is the detail that
+       makes a roof read as a roof rather than as a lid */
+    for (const z of [-6, 0, 5]) this.scene.add(box(W, 0.26, 0.26, truss, cx, ROOF - 0.95, z));
+
+    /* high bay lamps down the middle of the hall. Five station rigs light
+       five benches; this is what lights the walkway between them, and
+       without it the shop reads as five lit islands in a black field. */
+    for (let x = min + 8; x < max; x += 13) {
+      const l = new THREE.PointLight(0xfff0d8, 26, 30, 1.8);
+      l.position.set(x, ROOF - 1.6, 0);
+      this.scene.add(l);
+      this.scene.add(box(1.1, 0.3, 1.1, std({ color: 0x2a2c30, roughness: 0.7 }), x, ROOF - 1.2, 0));
+      this.scene.add(box(0.9, 0.1, 0.9, std({ color: 0xfff0d8, emissive: 0xfff0d8, emissiveIntensity: 1.1 }), x, ROOF - 1.45, 0));
+    }
+  }
+
+  /* One lamp per station. The range used to be 26 metres because each room
+     had walls to stop it; in an open bay that lights the whole shop the
+     colour of whichever station is brightest, so it is pulled in to roughly
+     one station's width. */
   roomLight(room, color, intensity, y = 4.6) {
-    const l = new THREE.PointLight(color, intensity, 26, 1.9);
+    const l = new THREE.PointLight(color, intensity * 0.8, 17, 2.0);
     l.position.set(room.x, y, 0);
-    l.castShadow = true;
-    l.shadow.mapSize.set(1024, 1024);
+    /* These used to cast shadows — five of them, which is five CUBE shadow
+       maps, thirty faces re-rendered every frame. That was affordable when
+       walls meant you only ever saw one room at a time; in an open bay you
+       see all five at once and it is the single most expensive thing in the
+       shop. The overhead key light already lays the floor shadows down
+       across the whole hall, and the gallery spots still shadow the object
+       on the pedestal, which is the one place a shadow is doing real work. */
+    l.castShadow = false;
     this.scene.add(l);
     return l;
   }
 
   /* ------------------------------------------------------------- */
   buildRooms() {
+    this.buildBay();
     this.buildSoftware();
-    this.buildCardboard();
-    this.buildFinished();
     this.buildMetal();
+    this.buildFinished();
+    this.buildCardboard();
+    this.buildElectronics();
+    this.buildMachineShop();
+  }
+
+  /* ------------------------------------------------------------- */
+  /* the electronics room                                           */
+  /* ------------------------------------------------------------- */
+  buildElectronics() {
+    const R = ROOMS.electronics, cx = R.x;
+    const wall = std({ color: 0x1d2a26, roughness: 0.85 });
+    this.shell(R, std({ map: this.tex.concrete, roughness: 0.8 }), wall, 0x223029);
+    this.roomLight(R, 0xdff5ea, 15, 5.0);
+    R.assemblyPoint = [cx, -1.1];
+
+    /* The bench: an ESD mat, a task lamp low over it, and the iron in its
+       stand. The lamp is the thing that sells the room — a tight pool of
+       light on a dark bench reads as close work from across the shop. */
+    const benchTop = std({ color: 0x2f3a41, roughness: 0.55 });
+    const frame = std({ color: 0x4a4640, roughness: 0.6, metalness: 0.45 });
+    const mat = std({ color: 0x1f6b52, roughness: 0.95 });
+
+    const b = new THREE.Group();
+    b.add(box(6.4, 0.14, 2.0, benchTop, 0, 0.98, 0));
+    b.add(box(6.0, 0.006, 1.6, mat, 0, 1.056, 0));
+    for (const dx of [-2.9, 2.9]) for (const dz of [-0.8, 0.8]) {
+      b.add(box(0.12, 0.98, 0.12, frame, dx, 0.49, dz));
+    }
+    b.position.set(cx, 0, -4.6);
+    this.scene.add(b);
+
+    const lampArm = std({ color: 0x3a4148, roughness: 0.5, metalness: 0.5 });
+    b.add(box(0.3, 0.06, 0.3, lampArm, -2.2, 1.08, -0.6));
+    b.add(box(0.06, 1.5, 0.06, lampArm, -2.2, 1.8, -0.6));
+    b.add(box(1.1, 0.06, 0.06, lampArm, -1.7, 2.52, -0.6));
+    const shade = cyl(0.3, 0.16, 0.24, lampArm, -1.2, 2.4, -0.6, 16);
+    shade.rotation.x = Math.PI; b.add(shade);
+    const task = new THREE.PointLight(0xfff2d8, 9, 7, 2);
+    task.position.set(cx - 1.2, 2.0, -5.2);
+    this.scene.add(task);
+
+    /* Component bins on the back wall, in the colours of a parts drawer.
+       Purely dressing, and the reason the room reads as electronics
+       rather than as another metal bench. */
+    const binColours = [0xd94f3d, 0xe0a33a, 0x4f9de0, 0x6ee7a8, 0xc06fd6, 0xdedede];
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 8; col++) {
+        const bin = box(0.52, 0.34, 0.4,
+          std({ color: binColours[(row * 8 + col) % binColours.length], roughness: 0.75 }),
+          cx - 2.0 + col * 0.58, 1.9 + row * 0.4, -8.2);
+        this.scene.add(bin);
+      }
+    }
+
+    /* A reel of solder and a scope, so the bench is not bare. */
+    const reel = cyl(0.26, 0.26, 0.1, std({ color: 0x9aa4ad, roughness: 0.5, metalness: 0.6 }), cx + 2.2, 1.12, -4.9, 18);
+    reel.rotation.x = Math.PI / 2; this.scene.add(reel);
+    const scope = box(1.3, 0.9, 0.7, std({ color: 0x2b3238, roughness: 0.6 }), cx + 1.6, 1.5, -5.5);
+    this.scene.add(scope);
+    this.scene.add(box(1.0, 0.6, 0.02, std({ color: 0x0d3b2a, emissive: 0x1f8a5e, emissiveIntensity: 0.6, roughness: 0.4 }), cx + 1.6, 1.55, -5.14));
+
+    this.hangSign(R, 'ELECTRONICS', 'the clever bit', cx, 4.9, 4.2, -0.02);
   }
 
   buildSoftware() {
@@ -318,16 +544,15 @@ export class World {
     roller.rotation.z = Math.PI / 2; this.scene.add(roller);
     this.scene.add(box(1.7, 1.9, 1.7, flute, cx + 2.7, 1.25, 2.6));
 
-    this.hangSign(R, 'CARDBOARD', 'v2', cx - 5.6, 4.8, 4.0, -0.04);
+    this.hangSign(R, 'LIGHT', 'board · ply · plastic', cx - 5.6, 4.8, 4.0, -0.04);
     this.hangSign(R, 'CUT', 'then fold', cx + 3.4, 5.1, 4.6, 0.05);
-    this.hangSign(R, 'MOCK IT', 'first', cx + 7.8, 4.5, 1.6, -0.06);
   }
 
   buildFinished() {
     const R = ROOMS.finished, cx = R.x;
     const wall = std({ map: this.tex.gallery, roughness: 0.92 });
     this.shell(R, std({ color: 0x2b2724, roughness: 0.5, metalness: 0.1 }), wall, 0xe6e0d4);
-    this.roomLight(R, 0xfff4e2, 26, 5.4);
+    this.roomLight(R, 0xfff4e2, 40, 5.4);
 
     // three pedestals under spots
     const ped = std({ color: 0xf2ece1, roughness: 0.7 });
@@ -358,7 +583,7 @@ export class World {
         cx + 4.2 + Math.random() * 4.6, 1.47 + Math.floor(i / 4) * 1.5 + h / 2, -6.2));
     }
     R.assemblyPoint = [cx, -1.2];
-    this.hangSign(R, 'FINISHED', 'the real one', cx, 4.9, 4.2, 0.02);
+    this.hangSign(R, 'ASSEMBLY', 'it all comes here', cx, 4.9, 4.2, 0.02);
   }
 
   buildMetal() {
@@ -443,6 +668,85 @@ export class World {
 
     this.hangSign(R, 'METAL', 'the hard way', cx - 1.2, 5.0, 4.2, -0.03);
     this.hangSign(R, 'HOT', 'do not touch', cx + 6.2, 4.6, 2.0, 0.06);
+  }
+
+  /* ------------------------------------------------------------- */
+  /* the machine shop                                               */
+  /* ------------------------------------------------------------- */
+  /* A lathe, a mill, a surface plate and an engine stand. The three
+     machines are what make the bay readable from across the floor — a
+     bench with tools on it looks like every other bench, a lathe with a
+     chuck and a bed does not. */
+  buildMachineShop() {
+    const R = ROOMS.machining, cx = R.x;
+    const wall = std({ map: this.tex.metalWall, roughness: 0.7, metalness: 0.3 });
+    this.shell(R, std({ map: this.tex.concrete, roughness: 0.88 }), wall, 0x2b3138);
+    this.roomLight(R, 0xdfe9f5, 24, 5.2);
+
+    const steel = std({ map: this.tex.metal, roughness: 0.38, metalness: 0.8 });
+    const cast = std({ color: 0x5d6b78, roughness: 0.62, metalness: 0.35 });
+    const dark = std({ color: 0x2f353c, roughness: 0.6, metalness: 0.45 });
+
+    /* the lathe — bed, headstock, chuck, tailstock, and a chip pan under
+       the lot. The chuck is the one part that has to spin. */
+    const lathe = new THREE.Group();
+    lathe.add(box(5.6, 0.9, 1.5, cast, 0, 0.9, 0));                       // cabinet
+    lathe.add(box(5.6, 0.3, 1.1, dark, 0, 1.45, 0));                      // bed
+    lathe.add(box(1.5, 1.3, 1.5, cast, -2.1, 2.15, 0));                   // headstock
+    const chuck = cyl(0.62, 0.62, 0.42, steel, -1.1, 2.2, 0, 20);
+    chuck.rotation.z = Math.PI / 2; lathe.add(chuck);
+    for (let i = 0; i < 3; i++) {
+      const jaw = box(0.16, 0.3, 0.2, dark, -0.9, 2.2 + Math.cos(i * 2.09) * 0.42, Math.sin(i * 2.09) * 0.42);
+      lathe.add(jaw);
+    }
+    lathe.add(box(0.9, 0.8, 1.0, cast, 1.9, 1.95, 0));                    // tailstock
+    lathe.add(box(0.7, 0.5, 0.9, dark, 0.2, 1.8, 0));                     // carriage
+    const wheel = cyl(0.34, 0.34, 0.08, dark, 0.2, 1.8, 0.62, 16);
+    lathe.add(wheel);
+    lathe.position.set(cx - 3.6, 0, -5.2);
+    this.scene.add(lathe);
+    this.latheChuck = chuck;
+
+    /* the mill — column, head, table */
+    const mill = new THREE.Group();
+    mill.add(box(1.8, 1.0, 1.6, cast, 0, 0.5, 0));
+    mill.add(box(1.0, 4.0, 1.0, cast, 0, 2.9, -0.5));
+    mill.add(box(1.4, 0.9, 1.2, cast, 0, 4.3, 0.4));
+    const quill = cyl(0.2, 0.2, 1.0, steel, 0, 3.5, 0.4, 14);
+    mill.add(quill);
+    mill.add(box(2.6, 0.22, 1.1, dark, 0, 1.15, 0.1));                    // table
+    mill.position.set(cx + 2.4, 0, -5.6);
+    this.scene.add(mill);
+    this.millQuill = quill;
+
+    /* the surface plate — the bench everything gets measured on. Granite,
+       so it is the one flat black thing in a bay of grey machines. */
+    const plate = new THREE.Group();
+    plate.add(box(3.0, 0.26, 1.6, std({ color: 0x1c1f24, roughness: 0.35 }), 0, 1.05, 0));
+    for (const dx of [-1.2, 1.2]) plate.add(box(0.18, 1.0, 1.2, dark, dx, 0.5, 0));
+    plate.position.set(cx - 0.2, 0, -2.6);
+    this.scene.add(plate);
+
+    /* an engine stand with nothing on it — the thing that says what gets
+       made here, in the way an anvil says it in the metal bay */
+    const stand = new THREE.Group();
+    stand.add(box(1.6, 0.2, 0.2, dark, 0, 0.12, 0));
+    stand.add(box(0.2, 0.2, 1.6, dark, 0, 0.12, 0));
+    stand.add(box(0.24, 2.0, 0.24, cast, 0, 1.1, 0));
+    const yoke = cyl(0.5, 0.5, 0.24, steel, 0, 2.1, 0.35, 16);
+    yoke.rotation.x = Math.PI / 2; stand.add(yoke);
+    for (const dx of [-0.7, 0.7]) { const w = cyl(0.16, 0.16, 0.1, dark, dx, 0.12, 0.7, 12); w.rotation.z = Math.PI / 2; stand.add(w); }
+    stand.position.set(cx + 5.4, 0, -2.2);
+    this.scene.add(stand);
+
+    /* a rack of round stock, waiting to be turned into something round */
+    for (let i = 0; i < 8; i++) {
+      const bar = cyl(0.09, 0.09, 5.5, steel, cx - 7.6, 0.6 + Math.floor(i / 4) * 0.26, -4.2 + (i % 4) * 0.26, 10);
+      bar.rotation.x = Math.PI / 2; this.scene.add(bar);
+    }
+
+    this.hangSign(R, 'MACHINE SHOP', 'to a thou', cx - 0.6, 5.0, 4.2, 0.02);
+    this.hangSign(R, '±0.01', 'or do it again', cx + 6.4, 4.6, 2.0, -0.05);
   }
 
   /* ------------------------------------------------------------- */
@@ -678,7 +982,9 @@ export class World {
     const spots = {
       cardboard: [ROOMS.cardboard.x - 3.2, -3.0],
       metal:     [ROOMS.metal.x - 2.2, -1.7],
-      finished:  [ROOMS.finished.x - 5.4, -1.2]
+      finished:  [ROOMS.finished.x - 5.4, -1.2],
+      electronics: [ROOMS.electronics.x - 3.4, -1.9],
+      machining: [ROOMS.machining.x - 3.4, -1.6]
     };
     for (const [key, [x, z]] of Object.entries(spots)) {
       const g = new THREE.Group();
@@ -767,6 +1073,73 @@ export class World {
   /* ------------------------------------------------------------- */
   /* seams — what makes it one object instead of a stack            */
   /* ------------------------------------------------------------- */
+  /* ------------------------------------------------------------- */
+  /* wiring                                                         */
+  /* ------------------------------------------------------------- */
+  /* The electrical counterpart of the weld beads. A wire is a real run
+     between two pins with a droop in it, because a wire that goes in a
+     dead straight line between two points reads as a CAD constraint and
+     a wire that sags reads as a wire somebody actually cut. Colour is by
+     convention — red leaves the positive terminal, black returns to the
+     negative one, and everything in between is signal.
+
+     Wires live in their own group and are cleared with the assembly, so
+     re-solving a build after an edit on the bench re-runs them. */
+  buildWires(wires, instances) {
+    if (this.wireGroup) { this.assembly.remove(this.wireGroup); this.wireGroup = null; }
+    if (!wires?.length || !instances?.length) return 0;
+
+    const byPart = new Map();
+    for (const inst of instances) if (!byPart.has(inst.src)) byPart.set(inst.src, inst);
+
+    const RED = std({ color: 0xd0392b, roughness: 0.45 });
+    const BLACK = std({ color: 0x22262b, roughness: 0.5 });
+    const SIGNAL = std({ color: 0xd8a13a, roughness: 0.45 });
+
+    const g = new THREE.Group();
+    let made = 0;
+
+    for (const w of wires.slice(0, 30)) {
+      const a = pinPoint(w.from, byPart), b = pinPoint(w.to, byPart);
+      if (!a || !b) continue;
+
+      /* Three points and a quadratic through them: the sag is a fraction
+         of the run, so a short hop between neighbouring components barely
+         dips and a wire across the board hangs properly. */
+      const mid = a.clone().add(b).multiplyScalar(0.5);
+      mid.y -= Math.max(0.02, a.distanceTo(b) * 0.16);
+      const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+      const geo = new THREE.TubeGeometry(curve, 12, 0.012, 6, false);
+
+      const pin = String(w.from).split('.')[1];
+      const mat = pin === '+' ? RED : pin === '-' ? BLACK : SIGNAL;
+      const tube = new THREE.Mesh(geo, mat);
+      tube.castShadow = true;
+      g.add(tube);
+      made++;
+    }
+
+    if (!made) return 0;
+    this.wireGroup = g;
+    this.assembly.add(g);
+    return made;
+
+    /* Where a pin lands in the assembly's own frame: the instance's
+       position, plus the pin's offset scaled by the body it sits on. */
+    function pinPoint(ref, map) {
+      const m = String(ref || '').match(/^(\d+)\.(.+)$/);
+      if (!m) return null;
+      const inst = map.get(Number(m[1]));
+      if (!inst) return null;
+      const off = pinOffset(inst.component, m[2]);
+      return new THREE.Vector3(
+        inst.pos[0] + off[0] * inst.half[0],
+        inst.pos[1] + off[1] * inst.half[1],
+        inst.pos[2] + off[2] * inst.half[2]
+      );
+    }
+  }
+
   buildSeams(joints) {
     if (!joints || !joints.length) return 0;
     const beadGeo = new THREE.SphereGeometry(0.028, 8, 6);
@@ -838,6 +1211,7 @@ export class World {
     for (let i = this.assembly.children.length - 1; i >= 0; i--) {
       this.assembly.remove(this.assembly.children[i]);
     }
+    const seen = new Map();
     for (const inst of solved.instances) {
       const mesh = new THREE.Mesh(
         this.partGeometry(inst.shape, inst.size),
@@ -850,10 +1224,70 @@ export class World {
       mesh.position.set(inst.pos[0], inst.pos[1], inst.pos[2]);
       mesh.userData.instance = inst;
       mesh.userData.spec = { name: inst.name, shape: inst.shape, material: inst.material };
+      /* Where this mesh sits at rest, and which copy of an arrayed part it
+         is. Both are needed to run an engine: motion is applied as an
+         offset FROM the rest pose (accumulating onto the live pose drifts
+         the assembly apart over a minute), and the copy number is what
+         makes piston 3 of a bank fire third. */
+      mesh.userData.rest = { pos: mesh.position.clone(), rot: mesh.rotation.clone() };
+      mesh.userData.copy = (seen.get(inst.src) ?? -1) + 1;
+      seen.set(inst.src, mesh.userData.copy);
       this.assembly.add(mesh);
     }
     this.buildSeams(solved.joints);
+    this.buildWires(solved.wires || this.pendingWires, solved.instances);
     return solved.instances.length;
+  }
+
+  /* ------------------------------------------------------------- */
+  /* running it                                                     */
+  /* ------------------------------------------------------------- */
+  /* An engine that has been built and never turns over is a model of an
+     engine. The kinematics come from engine.js, which is arithmetic and
+     tested; all that happens here is turning them into transforms, which
+     is the one thing engine.js is not allowed to know about. */
+  runEngine(motion, on = true, rate = 1) {
+    this.engineMotion = new Map((motion || []).map(m => [m.part, m]));
+    this.engineRunning = on && this.engineMotion.size > 0;
+    this.engineRate = rate;
+    if (!this.engineRunning) this.restEngine();
+    return this.engineRunning;
+  }
+
+  restEngine() {
+    for (const mesh of this.assembly.children) {
+      const rest = mesh.userData?.rest;
+      if (!rest) continue;
+      mesh.position.copy(rest.pos);
+      mesh.rotation.copy(rest.rot);
+    }
+  }
+
+  tickEngine(t) {
+    if (!this.engineRunning || !this.engineMotion?.size) return;
+    const turns = t * (this.engineRate || 1) / 60;          // revolutions so far
+    const up = new THREE.Vector3();
+    for (const mesh of this.assembly.children) {
+      const inst = mesh.userData?.instance;
+      const m = inst && this.engineMotion.get(inst.src);
+      if (!m) continue;
+      const rest = mesh.userData.rest;
+      const theta = turns * m.rpm * Math.PI * 2;
+
+      if (m.kind === 'spin') {
+        const axis = m.axis === 'x' ? 'x' : m.axis === 'z' ? 'z' : 'y';
+        mesh.rotation[axis] = rest.rot[axis] + theta;
+        continue;
+      }
+      /* A piston runs up its own bore, and the bore is tilted with the
+         bank — so the travel is along the part's OWN up axis, not the
+         world's. On an inline engine the two are the same and the bug
+         would never show; on a V it is the whole difference. */
+      const phase = m.phases?.[mesh.userData.copy % (m.phases.length || 1)] || 0;
+      const ph = pistonPhase(theta + phase, m.throw, m.rod);
+      up.set(0, 1, 0).applyEuler(rest.rot);
+      mesh.position.copy(rest.pos).addScaledVector(up, (ph - 0.5) * (m.travel || 0));
+    }
   }
 
   /* Everything standing on the pedestal, as raw triangles in the assembly's
@@ -911,7 +1345,17 @@ export class World {
 
   updateCamera(dt, follow) {
     const o = this.camOrbit;
-    const fx = follow ? follow.x : (this.focusX ?? ROOMS.cardboard.x);
+    /* Two framings, and the shop needs both. Following one robot at ~16m is
+       the shot that shows a tool meeting material. Standing off at ~34m is
+       the shot that shows six trades working at once, which is the whole
+       point of the floor and is completely invisible from the close one.
+       The moment the person touches the scroll wheel, neither applies —
+       they have chosen a framing and it is theirs. */
+    if (!o.free) {
+      const want = follow ? 16 : 34;
+      o.dist += (want - o.dist) * Math.min(1, dt * 1.1);
+    }
+    const fx = follow ? follow.x : (this.focusX ?? ROOMS.finished.x);
     const fz = follow ? follow.z : -1;
     this.camTarget.lerp(new THREE.Vector3(fx, 1.5, fz * 0.4), Math.min(1, dt * 2.6));
     const want = new THREE.Vector3(
@@ -934,6 +1378,9 @@ export class World {
     if (this.signs) for (const s of this.signs) s.rotation.z = Math.sin(t * 0.7 + s.userData.sway) * 0.018;
     if (this.cardWheel) this.cardWheel.rotation.x = t * 0.06;
     if (this.grindWheel) this.grindWheel.rotation.x = t * 4;
+    if (this.latheChuck) this.latheChuck.rotation.y = t * 6;
+    this.tickEngine(t);
+    if (this.millQuill) this.millQuill.rotation.y = t * 9;
     if (this.shopLamp) this.shopLamp.rotation.z = Math.sin(t * 0.5) * 0.03;
     if (this.crt) this.crt.material.emissiveIntensity = 0.75 + Math.sin(t * 9) * 0.12;
 

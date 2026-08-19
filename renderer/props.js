@@ -57,6 +57,17 @@ export const PROPS = {
   pliers:    () => grp(box(0.026, 0.18, 0.016, M.handle, -0.02, 0.02, 0), box(0.026, 0.18, 0.016, M.handle2, 0.02, 0.02, 0), box(0.05, 0.14, 0.02, M.steel, 0, 0.18, 0)),
   clamp:     () => grp(box(0.03, 0.3, 0.03, M.steel, 0, 0.12, 0), box(0.12, 0.03, 0.04, M.steel, 0.04, 0.26, 0), box(0.12, 0.03, 0.04, M.steel, 0.04, 0.02, 0)),
 
+  /* ---- the machine shop ------------------------------------------- */
+  /* Measuring tools read as measuring tools because of the ANVIL and the
+     dial — a bare stick in the hand looks like every other bare stick. */
+  micrometer:() => { const f = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.014, 8, 20, Math.PI * 1.35), M.steel); f.position.y = 0.14; f.rotation.z = -0.6;
+                     return grp(f, cyl(0.026, 0.026, 0.14, M.dark, 0.06, 0.2, 0, 14), cyl(0.016, 0.016, 0.05, M.steel, -0.05, 0.16, 0, 12)); },
+  dialgauge: () => { const d = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.022, 22), M.white); d.rotation.x = Math.PI / 2; d.position.y = 0.26;
+                     return grp(cyl(0.014, 0.014, 0.22, M.steel, 0, 0.08, 0), d, cyl(0.008, 0.008, 0.07, M.steel, 0, -0.04, 0)); },
+  torquewrench: () => grp(box(0.034, 0.42, 0.03, M.steel, 0, 0.18, 0), cyl(0.03, 0.03, 0.13, M.handle, 0, -0.04, 0, 14),
+                          cyl(0.05, 0.05, 0.035, M.dark, 0, 0.4, 0, 16)),
+  boringbar: () => grp(cyl(0.02, 0.02, 0.4, M.steel, 0, 0.18, 0, 14), box(0.05, 0.05, 0.05, M.dark, 0, -0.04, 0), box(0.022, 0.03, 0.022, M.yellow, 0, 0.39, 0)),
+
   sandblock: () => grp(box(0.16, 0.07, 0.11, M.wood, 0, 0.03, 0), box(0.17, 0.012, 0.12, M.dark, 0, -0.01, 0)),
   paintbrush:() => grp(cyl(0.017, 0.017, 0.24, M.wood, 0, 0.06, 0), box(0.055, 0.05, 0.02, M.steel, 0, 0.19, 0), box(0.06, 0.09, 0.022, M.paint, 0, 0.25, 0)),
   spraycan:  () => grp(cyl(0.05, 0.05, 0.21, M.paint, 0, 0.06, 0, 16), cyl(0.03, 0.03, 0.03, M.white, 0, 0.18, 0)),
@@ -66,7 +77,28 @@ export const PROPS = {
   cable:     () => { const g = new THREE.Group(); for (let i = 0; i < 10; i++) g.add(sph(0.022, M.black, Math.sin(i * 0.9) * 0.06, 0.03 * i, Math.cos(i * 0.7) * 0.05)); g.add(box(0.05, 0.06, 0.03, M.steel, 0, 0.32, 0)); return g; },
   panel:     () => grp(box(0.42, 0.42, 0.02, M.kraft, 0, 0.14, 0)),
   plate:     () => grp(box(0.4, 0.34, 0.018, M.steel, 0, 0.12, 0)),
-  mug:       () => grp(cyl(0.055, 0.048, 0.12, M.white, 0, 0.05, 0, 16))
+  mug:       () => grp(cyl(0.055, 0.048, 0.12, M.white, 0, 0.05, 0, 16)),
+
+  /* ---- the electronics bench -------------------------------------- */
+  /* An iron is a thin hot tip on a fat insulated grip — the silhouette
+     has to read at three metres, so the tip is longer than life. */
+  iron:      () => grp(cyl(0.026, 0.026, 0.18, M.handle2, 0, 0.04, 0),
+                       cyl(0.016, 0.016, 0.07, M.steel, 0, 0.16, 0),
+                       cyl(0.008, 0.002, 0.09, M.paint, 0, 0.24, 0)),
+  solderreel:() => { const t = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.022, 8, 18), M.steel); t.rotation.y = Math.PI / 2; t.position.y = 0.12; return grp(cyl(0.012, 0.012, 0.3, M.steel, 0, 0.1, 0), t); },
+  strippers: () => grp(box(0.024, 0.17, 0.014, M.paint, -0.02, 0.02, 0),
+                       box(0.024, 0.17, 0.014, M.paint, 0.02, 0.02, 0),
+                       box(0.055, 0.08, 0.018, M.steel, 0, 0.16, 0)),
+  multimeter:() => { const g = grp(box(0.17, 0.24, 0.05, M.yellow, 0, 0.08, 0),
+                       box(0.12, 0.07, 0.01, M.dark, 0, 0.15, 0.03),
+                       cyl(0.035, 0.035, 0.012, M.dark, 0, 0.04, 0.03, 14));
+                     for (let i = 0; i < 8; i++) g.add(sph(0.012, M.black, 0.08, 0.3 + 0.03 * i, 0.02 * Math.sin(i)));
+                     return g; },
+  tweezers:  () => grp(box(0.012, 0.16, 0.008, M.steel, -0.008, 0.06, 0),
+                       box(0.012, 0.16, 0.008, M.steel, 0.008, 0.06, 0)),
+  breadboard:() => { const g = grp(box(0.34, 0.02, 0.24, M.white, 0, 0.12, 0));
+                     for (let i = 0; i < 14; i++) g.add(box(0.006, 0.004, 0.16, M.dark, -0.15 + i * 0.023, 0.132, 0));
+                     return g; }
 };
 
 export const HEADGEAR = {
@@ -82,7 +114,13 @@ export const HEADGEAR = {
   goggles: () => grp(box(0.44, 0.14, 0.06, M.dark, 0, 0.08, 0.23), box(0.13, 0.1, 0.02, M.glass, -0.1, 0.08, 0.27), box(0.13, 0.1, 0.02, M.glass, 0.1, 0.08, 0.27), box(0.5, 0.05, 0.44, M.dark, 0, 0.08, 0)),
   hardhat: () => { const d = new THREE.Mesh(new THREE.SphereGeometry(0.31, 16, 10, 0, 7, 0, Math.PI / 2), M.yellow); d.position.y = 0.22; return grp(d, cyl(0.4, 0.4, 0.03, M.yellow, 0, 0.22, 0, 20)); },
   cap: () => { const d = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 10, 0, 7, 0, Math.PI / 2), M.handle); d.position.y = 0.22; return grp(d, box(0.42, 0.03, 0.3, M.handle, 0, 0.22, 0.28)); },
-  dustmask: () => grp(box(0.3, 0.17, 0.09, M.white, 0, -0.02, 0.25), box(0.46, 0.03, 0.4, M.white, 0, 0.06, 0.02))
+  dustmask: () => grp(box(0.3, 0.17, 0.09, M.white, 0, -0.02, 0.25), box(0.46, 0.03, 0.4, M.white, 0, 0.06, 0.02)),
+  /* A bench loupe on a headband — flipped down over one eye, which is
+     the only headgear in the shop that is asymmetric, and reads as
+     "close work" instantly. */
+  loupe: () => grp(box(0.5, 0.06, 0.44, M.dark, 0, 0.2, 0),
+                   cyl(0.055, 0.055, 0.07, M.dark, -0.1, 0.09, 0.26, 14),
+                   cyl(0.05, 0.05, 0.012, M.glass, -0.1, 0.09, 0.3, 14))
 };
 
 export function makeProp(name) {
